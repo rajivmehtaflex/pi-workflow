@@ -71,12 +71,10 @@ export class WorkflowEngine implements WorkflowHostApi {
 
   private replaceActor(actor: ActorRecord): void {
     if (this.options.journal.updateActor !== undefined) this.options.journal.updateActor(actor);
-    else this.options.journal.putActor(actor);
   }
 
   private replaceNode(node: NodeRecord): void {
     if (this.options.journal.updateNode !== undefined) this.options.journal.updateNode(node);
-    else this.options.journal.putNode(node);
   }
 
   createActor(siteId: string, name?: string, persona?: string | PersonaSpec): ActorId {
