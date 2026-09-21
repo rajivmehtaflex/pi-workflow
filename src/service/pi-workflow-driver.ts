@@ -72,12 +72,14 @@ function settlementError(result: Extract<ActorTurnSettlement, { status: "errored
 }
 
 export class PiWorkflowDriver implements WorkflowDriver {
+  readonly journal: JournalStorePort;
   private readonly sessions = new Map<string, ActorSessionState>();
   private readonly active = new Map<string, ActorTask>();
   private readonly maxConcurrency: number;
   private closed = false;
 
   constructor(private readonly options: PiWorkflowDriverOptions) {
+    this.journal = options.journal;
     this.maxConcurrency = Math.max(1, Math.floor(options.maxConcurrency));
   }
 
