@@ -69,6 +69,16 @@ export class WorkflowEngine implements WorkflowHostApi {
     this.options.journal.putNode(node);
   }
 
+  private replaceActor(actor: ActorRecord): void {
+    if (this.options.journal.updateActor !== undefined) this.options.journal.updateActor(actor);
+    else this.options.journal.putActor(actor);
+  }
+
+  private replaceNode(node: NodeRecord): void {
+    if (this.options.journal.updateNode !== undefined) this.options.journal.updateNode(node);
+    else this.options.journal.putNode(node);
+  }
+
   createActor(siteId: string, name?: string, persona?: string | PersonaSpec): ActorId {
     const normalizedName = typeof name === "string" && name.trim() ? name.trim() : undefined;
     if (normalizedName !== undefined && [...this.actors.values()].some((actor) => actor.name === normalizedName)) {
@@ -133,7 +143,7 @@ export class WorkflowEngine implements WorkflowHostApi {
         : ({ id: record.sessionId } satisfies SessionRef);
       if (record.sessionId === undefined) {
         record.sessionId = session.id;
-        this.options.journal.putActor(record);
+        this.replaceActor(record);
       }
       this.emit({ type: "node-dispatched", instance });
       this.options.driver.startAsk(session, instance, { instructions, typed: false });
@@ -148,7 +158,7 @@ export class WorkflowEngine implements WorkflowHostApi {
     const pending = this.pending.get(this.key(instance));
     if (pending === undefined) return;
     this.pending.delete(this.key(instance));
-    this.options.journal.putNode({
+    this.replaceNode({
       ...(this.options.journal.getNode(this.options.runId, instance.siteId, instance.ordinal) as NodeRecord),
       status: "completed",
       result: value,
@@ -166,7 +176,7 @@ export class WorkflowEngine implements WorkflowHostApi {
     this.pending.delete(this.key(instance));
     const failure = toWorkflowErrorJson(error);
     const existing = this.options.journal.getNode(this.options.runId, instance.siteId, instance.ordinal);
-    if (existing !== undefined) this.options.journal.putNode({ ...existing, status: "failed", error: failure, updatedAt: Date.now() });
+    if (existing !== undefined) this.replaceNode({ ...existing, status: "failed", error: failure, updatedAt: Date.now() });
     this.emit({ type: "node-settled", instance, outcome: "failed", error: failure });
     pending.reject(error);
   }
@@ -178,11 +188,14 @@ export class WorkflowEngine implements WorkflowHostApi {
     try {
       const value = await this.options.driver.executeWorldRead(op, args);
       const existing = this.options.journal.getNode(this.options.runId, siteId, instance.ordinal);
-      if (existing !== undefined) this.options.journal.putNode({ ...existing, status: "completed", result: value, updatedAt: Date.now() });
+      if (existing !== undefined) this.replaceNode({ ...existing, status: "completed", result: value, updatedAt: Date.now() });
       this.emit({ type: "node-settled", instance, outcome: "ok" });
       return value;
     } catch (error) {
-      this.rejectAsk(instance, error);
+      const failure = toWorkflowErrorJson(error);
+      const existing = this.options.journal.getNode(this.options.runId, siteId, instance.ordinal);
+      if (existing !== undefined) this.replaceNode({ ...existing, status: "failed", error: failure, updatedAt: Date.now() });
+      this.emit({ type: "node-settled", instance, outcome: "failed", error: failure });
       throw error;
     }
   }

@@ -200,9 +200,11 @@ export interface JournalStorePort {
   updateRunStatus(runId: string, status: RunStatus, settlement?: RunSettlementRecord): void;
   updateRunUsage(runId: string, spentTokens: number): void;
   putActor(record: ActorRecord): void;
+  updateActor?(record: ActorRecord): void;
   getActor(runId: string, siteId: string, ordinal: number): ActorRecord | undefined;
   listActors(runId: string): ActorRecord[];
   putNode(record: NodeRecord): void;
+  updateNode?(record: NodeRecord): void;
   getNode(runId: string, siteId: string, ordinal: number): NodeRecord | undefined;
   listNodes(runId: string): NodeRecord[];
   appendEvent(runId: string, event: RunEvent): StoredEvent;
