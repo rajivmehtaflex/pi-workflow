@@ -73,12 +73,37 @@ function fakeDriverFactory(state: { active: number; maxActive: number; starts: s
   return (options: PiWorkflowDriverOptions): WorkflowDriver => {
     const pending = new Map<string, NodeJS.Timeout>();
     const sessions = new Map<string, ActorRef>();
+    const activeSessions = new Set<string>();
+    const queue: Array<{ session: SessionRef; instance: InstanceRef; instructions: string }> = [];
+    const pump = () => {
+      while (state.active < options.maxConcurrency && queue.length > 0) {
+        const index = queue.findIndex((candidate) => !activeSessions.has(candidate.session.id));
+        if (index < 0) return;
+        const task = queue.splice(index, 1)[0]!;
+        activeSessions.add(task.session.id);
+        state.starts.push(task.instructions);
+        state.active += 1;
+        state.maxActive = Math.max(state.maxActive, state.active);
+        const key = `${task.instance.siteId}@${task.instance.ordinal}`;
+        const timer = setTimeout(() => {
+          pending.delete(key);
+          state.active -= 1;
+          activeSessions.delete(task.session.id);
+          options.onResolveAsk?.(task.instance, { answer: task.instructions }, { totalTokens: 1, messageBoundary: 1 });
+          pump();
+        }, state.delayMs ?? 5);
+        pending.set(key, timer);
+      }
+    };
     const reject = (instance: InstanceRef, error: Error) => {
-      const timer = pending.get(`${instance.siteId}@${instance.ordinal}`);
+      const key = `${instance.siteId}@${instance.ordinal}`;
+      const timer = pending.get(key);
       if (timer !== undefined) clearTimeout(timer);
-      pending.delete(`${instance.siteId}@${instance.ordinal}`);
-      if (state.active > 0) state.active -= 1;
+      if (pending.delete(key)) state.active -= 1;
+      const index = queue.findIndex((task) => `${task.instance.siteId}@${task.instance.ordinal}` === key);
+      if (index >= 0) queue.splice(index, 1);
       options.onRejectAsk?.(instance, error);
+      pump();
     };
     return {
       journal: options.journal,
@@ -92,15 +117,8 @@ function fakeDriverFactory(state: { active: number; maxActive: number; starts: s
           reject(instance, new Error("unknown fake session"));
           return;
         }
-        state.starts.push(message.instructions);
-        state.active += 1;
-        state.maxActive = Math.max(state.maxActive, state.active);
-        const timer = setTimeout(() => {
-          pending.delete(`${instance.siteId}@${instance.ordinal}`);
-          state.active -= 1;
-          options.onResolveAsk?.(instance, { answer: message.instructions }, { totalTokens: 1, messageBoundary: 1 });
-        }, state.delayMs ?? 5);
-        pending.set(`${instance.siteId}@${instance.ordinal}`, timer);
+        queue.push({ session, instance, instructions: message.instructions });
+        pump();
       },
       respondToSubmit() {},
       cancelAsk(instance) {
@@ -167,13 +185,14 @@ describe("workflow run service ownership and resume", () => {
     const service = await createWorkflowRunService({ cwd: await workspace(), repository: memoryRepository(), driverFactory: fakeDriverFactory(state) });
     services.push(service);
     const source = `const reviewer = agent("reviewer"); return await reviewer.ask("wait");`;
-    const accepted = await service.createWorkflow({ source });
+    const accepted = await service.createWorkflow({ source: { script: source } });
     for (let attempt = 0; attempt < 100 && state.active === 0; attempt += 1) await new Promise((resolve) => setTimeout(resolve, 5));
     expect(service.stopRun(accepted.runId).status).toBe("stopped");
     expect((await waitForTerminal(service, accepted.runId)).stopReason).toBe("user");
     await expect(service.resumeRun(accepted.runId, { script: `${source}\nlog("changed");` })).rejects.toMatchObject({ json: { code: "ScriptHashMismatch" } });
     const resumed = await service.resumeRun(accepted.runId, { script: source });
     expect(resumed.runId).toBe(accepted.runId);
+    console.log("resume-start", service.getRun(resumed.runId), state);
     expect((await waitForTerminal(service, resumed.runId)).status).toBe("completed");
   });
 

@@ -281,7 +281,8 @@ export class WorkflowRunService {
     };
     const driver = (this.dependencies.driverFactory ?? createPiWorkflowDriver)(driverOptions);
     engine = new WorkflowEngine({ runId: record.runId, caps: record.caps, journal: this.repository, driver });
-    this.active.set(record.runId, { record, engine, driver, controller });
+    const activeRun: ActiveRun = { record, engine, driver, controller };
+    this.active.set(record.runId, activeRun);
     const actorIds = new Map<string, string>();
     const task = this.runWorkflowImpl({
       runId: record.runId,
@@ -298,7 +299,7 @@ export class WorkflowRunService {
       else if (settlement.status === "errored") engine?.fail(errorForSettlement(settlement));
       else engine?.stop(settlement.stopReason ?? "interrupted", errorForSettlement(settlement));
     }).catch((error) => engine?.fail(error)).finally(() => {
-      this.active.delete(record.runId);
+      if (this.active.get(record.runId) === activeRun) this.active.delete(record.runId);
     });
     void task;
   }
