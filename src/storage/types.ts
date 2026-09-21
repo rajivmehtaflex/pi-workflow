@@ -29,3 +29,18 @@ export interface SavedWorkflowRecord {
   argsSchema?: unknown;
   updatedAt: number;
 }
+
+export type EscalationStatus = "pending" | "resolved" | "cancelled";
+
+export interface EscalationRecord {
+  qid: string;
+  runId: string;
+  actorSiteId?: string;
+  actorOrdinal?: number;
+  question: string;
+  context?: string;
+  askedAt: number;
+  status: EscalationStatus;
+  answer?: string;
+  resolvedAt?: number;
+}

@@ -11,7 +11,7 @@ import type {
   RunStatus,
   StoredEvent,
 } from "../zcode-core/engine/types.js";
-import type { ArtifactInsert, SavedWorkflowRecord } from "./types.js";
+import type { ArtifactInsert, EscalationRecord, EscalationStatus, SavedWorkflowRecord } from "./types.js";
 
 type Row = Record<string, unknown>;
 const encode = (value: unknown): string | null => (value === undefined ? null : JSON.stringify(value));
@@ -279,6 +279,42 @@ export class WorkflowRepository implements JournalStorePort {
 
   listNonTerminalRuns(workspaceKey: string): RunRecord[] {
     return (this.db.prepare("SELECT * FROM workflow_runs WHERE workspace_key = ? AND status IN ('pending','running') ORDER BY updated_at DESC").all(workspaceKey) as Row[]).map(runFromRow);
+  }
+
+  putEscalation(record: EscalationRecord): void {
+    this.db.prepare(`
+      INSERT INTO workflow_escalations
+      (qid, run_id, actor_site_id, actor_ordinal, question, context, asked_at, status, answer, resolved_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(record.qid, record.runId, record.actorSiteId ?? null, record.actorOrdinal ?? null, record.question, record.context ?? null, record.askedAt, record.status, record.answer ?? null, record.resolvedAt ?? null);
+  }
+
+  getEscalation(qid: string): EscalationRecord | undefined {
+    const row = this.db.prepare("SELECT * FROM workflow_escalations WHERE qid = ?").get(qid) as Row | undefined;
+    if (row === undefined) return undefined;
+    return {
+      qid: String(row.qid),
+      runId: String(row.run_id),
+      ...(typeof row.actor_site_id === "string" ? { actorSiteId: row.actor_site_id } : {}),
+      ...(row.actor_ordinal === null ? {} : { actorOrdinal: Number(row.actor_ordinal) }),
+      question: String(row.question),
+      ...(typeof row.context === "string" ? { context: row.context } : {}),
+      askedAt: Number(row.asked_at),
+      status: row.status as EscalationStatus,
+      ...(typeof row.answer === "string" ? { answer: row.answer } : {}),
+      ...(row.resolved_at === null ? {} : { resolvedAt: Number(row.resolved_at) }),
+    };
+  }
+
+  updateEscalation(qid: string, status: EscalationStatus, answer?: string): EscalationRecord {
+    const result = this.db.prepare("UPDATE workflow_escalations SET status = ?, answer = ?, resolved_at = ? WHERE qid = ? AND status = 'pending'").run(status, answer ?? null, status === "pending" ? null : Date.now(), qid);
+    if (result.changes !== 1) throw new Error(`workflow journal: escalation is missing or already settled: ${qid}`);
+    return this.getEscalation(qid)!;
+  }
+
+  listPendingEscalations(runId: string): EscalationRecord[] {
+    const rows = this.db.prepare("SELECT * FROM workflow_escalations WHERE run_id = ? AND status = 'pending' ORDER BY asked_at, qid").all(runId) as Row[];
+    return rows.map((row) => this.getEscalation(String(row.qid))!).filter((record): record is EscalationRecord => record !== undefined);
   }
 
   saveWorkflow(record: SavedWorkflowRecord): void {
