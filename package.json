@@ -1,0 +1,59 @@
+{
+  "name": "@pi-workflow/extension",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Deterministic Pi workflow extension backed by a durable ZCode-compatible run service.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./contract": {
+      "types": "./dist/contract.d.ts",
+      "import": "./dist/contract.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "pi": {
+    "extensions": [
+      "./dist/index.js"
+    ]
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "oxlint src tests",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "fmt:check": "oxfmt --check src tests *.json *.md *.ts",
+    "auto-commit": "bash scripts/auto-commit.sh",
+    "auto-commit:start": "bash scripts/auto-commit.sh start",
+    "auto-commit:stop": "bash scripts/auto-commit.sh stop",
+    "auto-commit:status": "bash scripts/auto-commit.sh status"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-agent-core": ">=0.86.0 <0.87.0",
+    "@earendil-works/pi-coding-agent": ">=0.86.0 <0.87.0",
+    "@earendil-works/pi-tui": ">=0.86.0 <0.87.0"
+  },
+  "dependencies": {
+    "@sinclair/typebox": "^0.34.39",
+    "better-sqlite3": "^11.10.0",
+    "typescript": "^6.0.2"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^25.5.0",
+    "oxfmt": "^0.41.0",
+    "oxlint": "^1.57.0",
+    "vitest": "^3.2.4"
+  }
+}

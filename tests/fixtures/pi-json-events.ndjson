@@ -1,0 +1,8 @@
+{"type":"session","version":1,"id":"session-fixture","cwd":"/tmp/pi-workflow-fixture","sessionFile":"/tmp/pi-workflow-fixture/actor.jsonl"}
+{"type":"agent_start","agentId":"actor-fixture","model":{"provider":"fixture","id":"fixture-model"}}
+{"type":"turn_start","turnId":"turn-1"}
+{"type":"message_update","messageId":"message-1","assistantMessageEvent":{"type":"text_delta","delta":"partial"}}
+{"type":"message_end","messageId":"message-1","message":{"role":"assistant","content":[{"type":"text","text":"{\"ok\":true}"}],"stopReason":"stop"}}
+{"type":"tool_execution_start","toolCallId":"tool-1","toolName":"read","args":{"path":"README.md"}}
+{"type":"tool_execution_end","toolCallId":"tool-1","isError":false,"result":{"content":[{"type":"text","text":"fixture"}]}}
+{"type":"agent_end","reason":"stop","usage":{"inputTokens":12,"outputTokens":4,"totalTokens":16}}
