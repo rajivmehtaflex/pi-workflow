@@ -151,13 +151,13 @@ export class WorkflowEngine implements WorkflowHostApi {
       status: "running",
       createdAt: Date.now(),
     };
-    this.recordNode(node);
     this.emit({ type: "node-queued", instance, kind: "ask", actor: actorRef, actorSeq });
     const cached = this.cachedNodes.get(this.key(instance));
     if (cached !== undefined && cached.inputHash === node.inputHash) {
       this.emit({ type: "node-settled", instance, outcome: "ok", cached: true });
       return cached.result;
     }
+    this.recordNode(node);
     const result = new Promise<unknown>((resolve, reject) => this.pending.set(this.key(instance), { instance, resolve, reject }));
     void this.startAsk(actor, actorRecord, instance, instructions, actorRef, actorSeq);
     return result;
@@ -219,13 +219,13 @@ export class WorkflowEngine implements WorkflowHostApi {
     const instance = this.nextNode(siteId);
     const inputHash = hashInput({ op, args });
     const nodeKind = op === "world.run" ? "world-run" : "world-read";
-    this.recordNode({ runId: this.options.runId, siteId, ordinal: instance.ordinal, kind: nodeKind, inputHash, input: { op, args }, status: "running", createdAt: Date.now() });
     this.emit({ type: "node-queued", instance, kind: op === "world.run" ? "world-run" : "world-read" });
     const cached = this.cachedNodes.get(this.key(instance));
     if (cached !== undefined && cached.inputHash === inputHash) {
       this.emit({ type: "node-settled", instance, outcome: "ok", cached: true });
       return cached.result;
     }
+    this.recordNode({ runId: this.options.runId, siteId, ordinal: instance.ordinal, kind: nodeKind, inputHash, input: { op, args }, status: "running", createdAt: Date.now() });
     try {
       const value = await this.options.driver.executeWorldRead(op, args);
       const existing = this.options.journal.getNode(this.options.runId, siteId, instance.ordinal);
