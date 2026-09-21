@@ -247,12 +247,19 @@ export class WorkflowRunService {
   }
 
   private persistLaunch(record: RunRecord, model: string | undefined, lowered: LoweredWorkflow): void {
+    console.error("persist:start");
     this.repository.transaction(() => {
+      console.error("persist:tx");
       this.repository.createRun(record);
+      console.error("persist:created");
       this.repository.appendEvent(record.runId, { type: "run-started", runId: record.runId, caps: record.caps });
+      console.error("persist:start-event");
       this.repository.updateRunStatus(record.runId, "running");
+      console.error("persist:running");
       this.repository.appendEvent(record.runId, { type: "run-launched", subagentModel: model, scriptPath: record.scriptPath, phaseNames: lowered.graph.phases.map((phase) => phase.name) });
+      console.error("persist:launch-event");
     });
+    console.error("persist:end");
   }
 
   private launch(record: RunRecord, lowered: LoweredWorkflow, model?: string, thinking?: string): void {
