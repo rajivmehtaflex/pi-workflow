@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { createWorkflowRunService, type WorkflowRunService } from "../src/service/run-service.js";
 import type { PiWorkflowDriverOptions } from "../src/service/pi-workflow-driver.js";
-import type { ActorRef, ActorRecord, InstanceRef, JournalStorePort, NodeRecord, RunEvent, RunRecord, SessionRef, StoredEvent, SubmitVerdict, WorkflowDriver } from "../src/zcode-core/engine/types.js";
+import type { ActorRef, ActorRecord, InstanceRef, JournalStorePort, NodeRecord, RunRecord, SessionRef, StoredEvent, WorkflowDriver } from "../src/zcode-core/engine/types.js";
 import type { EscalationRecord, SavedWorkflowRecord } from "../src/storage/types.js";
 import type { WorkflowRepository } from "../src/storage/repository.js";
 
@@ -72,6 +72,7 @@ async function waitForTerminal(service: WorkflowRunService, runId: string): Prom
 function fakeDriverFactory(state: { active: number; maxActive: number; starts: string[]; delayMs?: number }) {
   return (options: PiWorkflowDriverOptions): WorkflowDriver => {
     const pending = new Map<string, NodeJS.Timeout>();
+    const runningSessions = new Map<string, string>();
     const sessions = new Map<string, ActorRef>();
     const activeSessions = new Set<string>();
     const queue: Array<{ session: SessionRef; instance: InstanceRef; instructions: string }> = [];
@@ -85,10 +86,12 @@ function fakeDriverFactory(state: { active: number; maxActive: number; starts: s
         state.active += 1;
         state.maxActive = Math.max(state.maxActive, state.active);
         const key = `${task.instance.siteId}@${task.instance.ordinal}`;
+        runningSessions.set(key, task.session.id);
         const timer = setTimeout(() => {
           pending.delete(key);
           state.active -= 1;
           activeSessions.delete(task.session.id);
+          runningSessions.delete(key);
           options.onResolveAsk?.(task.instance, { answer: task.instructions }, { totalTokens: 1, messageBoundary: 1 });
           pump();
         }, state.delayMs ?? 5);
@@ -100,6 +103,9 @@ function fakeDriverFactory(state: { active: number; maxActive: number; starts: s
       const timer = pending.get(key);
       if (timer !== undefined) clearTimeout(timer);
       if (pending.delete(key)) state.active -= 1;
+      const sessionId = runningSessions.get(key);
+      if (sessionId !== undefined) activeSessions.delete(sessionId);
+      runningSessions.delete(key);
       const index = queue.findIndex((task) => `${task.instance.siteId}@${task.instance.ordinal}` === key);
       if (index >= 0) queue.splice(index, 1);
       options.onRejectAsk?.(instance, error);
@@ -129,7 +135,7 @@ function fakeDriverFactory(state: { active: number; maxActive: number; starts: s
       },
       emit() {},
       dispose() {
-        for (const key of [...pending.keys()]) {
+        for (const key of pending.keys()) {
           const [siteId, ordinal] = key.split("@");
           reject({ siteId: siteId!, ordinal: Number(ordinal) }, new Error("fake driver disposed"));
         }
@@ -190,6 +196,7 @@ describe("workflow run service ownership and resume", () => {
     expect(service.stopRun(accepted.runId).status).toBe("stopped");
     expect((await waitForTerminal(service, accepted.runId)).stopReason).toBe("user");
     await expect(service.resumeRun(accepted.runId, { script: `${source}\nlog("changed");` })).rejects.toMatchObject({ json: { code: "ScriptHashMismatch" } });
+    state.delayMs = 5;
     const resumed = await service.resumeRun(accepted.runId, { script: source });
     expect(resumed.runId).toBe(accepted.runId);
     const resumedRun = await waitForTerminal(service, resumed.runId);

@@ -231,7 +231,7 @@ export class WorkflowRunService {
   }
 
   async dispose(): Promise<void> {
-    for (const runId of [...this.active.keys()]) this.stopRun(runId);
+    for (const runId of this.active.keys()) this.stopRun(runId);
     for (let attempt = 0; attempt < 200 && this.active.size > 0; attempt += 1) await new Promise((resolve) => setTimeout(resolve, 5));
     this.ownedDatabase?.close();
   }
