@@ -35,3 +35,15 @@ Durable state is stored in `<workspace>/.pi/workflows.db`; generated entries, ac
 and artifacts live beneath `<workspace>/.pi/workflow-runs/` and are ignored by the target
 workspace. A missing provider credential prevents only live-Agent verification; fake-Pi tests
 cover the process protocol without credentials.
+
+## Auto-commit and push
+
+This repository includes a 2-minute runner that automatically stages, commits, and pushes changes to GitHub:
+
+```bash
+npm run auto-commit:start   # Start background daemon
+npm run auto-commit:status  # Check daemon status
+npm run auto-commit:stop    # Stop background daemon
+bash scripts/auto-commit.sh once # Run single commit and push cycle
+```
+
