@@ -40,8 +40,12 @@ const hashInput = (value: unknown): string => createHash("sha256").update(JSON.s
 export class WorkflowEngine implements WorkflowHostApi {
   private readonly actors = new Map<ActorId, ActorRecord>();
   private readonly actorOrdinals = new Map<string, number>();
+  private readonly actorCursors = new Map<string, number>();
   private readonly actorSequences = new Map<ActorId, number>();
+  private readonly actorSequenceCursors = new Map<ActorId, number>();
   private readonly nodeOrdinals = new Map<string, number>();
+  private readonly nodeCursors = new Map<string, number>();
+  private readonly cachedNodes = new Map<string, NodeRecord>();
   private readonly pending = new Map<string, PendingAsk>();
   private readonly artifacts = new Map<string, ArtifactVersionRecord>();
   private readonly phaseOrdinals = new Map<string, number>();
@@ -52,6 +56,21 @@ export class WorkflowEngine implements WorkflowHostApi {
 
   constructor(private readonly options: WorkflowEngineOptions) {
     this.maxReports = options.maxReports ?? 256;
+    for (const actor of options.journal.listActors(options.runId)) {
+      const id = `${actor.siteId}@${actor.ordinal}`;
+      this.actors.set(id, actor);
+      this.actorOrdinals.set(actor.siteId, Math.max(this.actorOrdinals.get(actor.siteId) ?? 0, actor.ordinal));
+      this.actorSequences.set(id, Math.max(this.actorSequences.get(id) ?? 0, 0));
+    }
+    for (const node of options.journal.listNodes(options.runId)) {
+      const key = this.key({ siteId: node.siteId, ordinal: node.ordinal });
+      this.nodeOrdinals.set(node.siteId, Math.max(this.nodeOrdinals.get(node.siteId) ?? 0, node.ordinal));
+      if (node.status === "completed") this.cachedNodes.set(key, node);
+      if (node.actorSiteId !== undefined && node.actorOrdinal !== undefined && node.actorSeq !== undefined) {
+        const actorId = `${node.actorSiteId}@${node.actorOrdinal}`;
+        this.actorSequences.set(actorId, Math.max(this.actorSequences.get(actorId) ?? 0, node.actorSeq));
+      }
+    }
   }
 
   private emit(event: RunEvent): void {
@@ -60,13 +79,16 @@ export class WorkflowEngine implements WorkflowHostApi {
   }
 
   private nextNode(siteId: string): InstanceRef {
-    const ordinal = (this.nodeOrdinals.get(siteId) ?? 0) + 1;
-    this.nodeOrdinals.set(siteId, ordinal);
+    const ordinal = (this.nodeCursors.get(siteId) ?? 0) + 1;
+    this.nodeCursors.set(siteId, ordinal);
+    this.nodeOrdinals.set(siteId, Math.max(this.nodeOrdinals.get(siteId) ?? 0, ordinal));
     return { siteId, ordinal };
   }
 
   private recordNode(node: NodeRecord): void {
-    this.options.journal.putNode(node);
+    const existing = this.options.journal.getNode(this.options.runId, node.siteId, node.ordinal);
+    if (existing === undefined) this.options.journal.putNode(node);
+    else if (this.options.journal.updateNode !== undefined) this.options.journal.updateNode(node);
   }
 
   private replaceActor(actor: ActorRecord): void {
@@ -82,8 +104,9 @@ export class WorkflowEngine implements WorkflowHostApi {
     if (normalizedName !== undefined && [...this.actors.values()].some((actor) => actor.name === normalizedName)) {
       throw new WorkflowError("DuplicateActorName", `Duplicate actor name: ${normalizedName}`);
     }
-    const ordinal = (this.actorOrdinals.get(siteId) ?? 0) + 1;
-    this.actorOrdinals.set(siteId, ordinal);
+    const ordinal = (this.actorCursors.get(siteId) ?? 0) + 1;
+    this.actorCursors.set(siteId, ordinal);
+    this.actorOrdinals.set(siteId, Math.max(this.actorOrdinals.get(siteId) ?? 0, ordinal));
     const actor: ActorRecord = {
       runId: this.options.runId,
       siteId,
@@ -93,6 +116,13 @@ export class WorkflowEngine implements WorkflowHostApi {
       createdAt: Date.now(),
     };
     const id = `${siteId}@${ordinal}`;
+    const existing = this.actors.get(id);
+    if (existing !== undefined) {
+      if (normalizedName !== undefined && existing.name !== undefined && normalizedName !== existing.name) {
+        throw new WorkflowError("DuplicateActorName", `Actor ${siteId} changed its name during resume`);
+      }
+      return id;
+    }
     this.actors.set(id, actor);
     this.actorSequences.set(id, 0);
     this.options.journal.putActor(actor);
@@ -105,8 +135,9 @@ export class WorkflowEngine implements WorkflowHostApi {
     if (actorRecord === undefined) throw new WorkflowError("UnknownActor", `Unknown actor: ${actor}`);
     const instance = this.nextNode(siteId);
     const actorRef: ActorRef = { siteId: actorRecord.siteId, ordinal: actorRecord.ordinal };
-    const actorSeq = (this.actorSequences.get(actor) ?? 0) + 1;
-    this.actorSequences.set(actor, actorSeq);
+    const actorSeq = (this.actorSequenceCursors.get(actor) ?? 0) + 1;
+    this.actorSequenceCursors.set(actor, actorSeq);
+    this.actorSequences.set(actor, Math.max(this.actorSequences.get(actor) ?? 0, actorSeq));
     const node: NodeRecord = {
       runId: this.options.runId,
       siteId: instance.siteId,
@@ -122,6 +153,11 @@ export class WorkflowEngine implements WorkflowHostApi {
     };
     this.recordNode(node);
     this.emit({ type: "node-queued", instance, kind: "ask", actor: actorRef, actorSeq });
+    const cached = this.cachedNodes.get(this.key(instance));
+    if (cached !== undefined && cached.inputHash === node.inputHash) {
+      this.emit({ type: "node-settled", instance, outcome: "ok", cached: true });
+      return cached.result;
+    }
     const result = new Promise<unknown>((resolve, reject) => this.pending.set(this.key(instance), { instance, resolve, reject }));
     void this.startAsk(actor, actorRecord, instance, instructions, actorRef, actorSeq);
     return result;
@@ -181,8 +217,15 @@ export class WorkflowEngine implements WorkflowHostApi {
 
   async worldRead(siteId: string, op: WorldReadOp, args: unknown[]): Promise<unknown> {
     const instance = this.nextNode(siteId);
-    this.recordNode({ runId: this.options.runId, siteId, ordinal: instance.ordinal, kind: op === "world.run" ? "world-run" : "world-read", inputHash: hashInput({ op, args }), input: { op, args }, status: "running", createdAt: Date.now() });
+    const inputHash = hashInput({ op, args });
+    const nodeKind = op === "world.run" ? "world-run" : "world-read";
+    this.recordNode({ runId: this.options.runId, siteId, ordinal: instance.ordinal, kind: nodeKind, inputHash, input: { op, args }, status: "running", createdAt: Date.now() });
     this.emit({ type: "node-queued", instance, kind: op === "world.run" ? "world-run" : "world-read" });
+    const cached = this.cachedNodes.get(this.key(instance));
+    if (cached !== undefined && cached.inputHash === inputHash) {
+      this.emit({ type: "node-settled", instance, outcome: "ok", cached: true });
+      return cached.result;
+    }
     try {
       const value = await this.options.driver.executeWorldRead(op, args);
       const existing = this.options.journal.getNode(this.options.runId, siteId, instance.ordinal);
