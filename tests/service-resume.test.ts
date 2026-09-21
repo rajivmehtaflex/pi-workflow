@@ -192,8 +192,8 @@ describe("workflow run service ownership and resume", () => {
     await expect(service.resumeRun(accepted.runId, { script: `${source}\nlog("changed");` })).rejects.toMatchObject({ json: { code: "ScriptHashMismatch" } });
     const resumed = await service.resumeRun(accepted.runId, { script: source });
     expect(resumed.runId).toBe(accepted.runId);
-    console.log("resume-start", service.getRun(resumed.runId), state);
-    expect((await waitForTerminal(service, resumed.runId)).status).toBe("completed");
+    const resumedRun = await waitForTerminal(service, resumed.runId);
+    expect(resumedRun.status).toBe("completed");
   });
 
   it("does not wait forever for a headless escalation", async () => {

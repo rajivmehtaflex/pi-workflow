@@ -15,7 +15,6 @@ import type {
   PersonaSpec,
   RunEvent,
   RunStatus,
-  SessionRef,
   WorkflowDriver,
   WorkflowHostApi,
   WorldReadOp,
@@ -101,9 +100,6 @@ export class WorkflowEngine implements WorkflowHostApi {
 
   createActor(siteId: string, name?: string, persona?: string | PersonaSpec): ActorId {
     const normalizedName = typeof name === "string" && name.trim() ? name.trim() : undefined;
-    if (normalizedName !== undefined && [...this.actors.values()].some((actor) => actor.name === normalizedName)) {
-      throw new WorkflowError("DuplicateActorName", `Duplicate actor name: ${normalizedName}`);
-    }
     const ordinal = (this.actorCursors.get(siteId) ?? 0) + 1;
     this.actorCursors.set(siteId, ordinal);
     this.actorOrdinals.set(siteId, Math.max(this.actorOrdinals.get(siteId) ?? 0, ordinal));
@@ -122,6 +118,9 @@ export class WorkflowEngine implements WorkflowHostApi {
         throw new WorkflowError("DuplicateActorName", `Actor ${siteId} changed its name during resume`);
       }
       return id;
+    }
+    if (normalizedName !== undefined && [...this.actors.values()].some((actor) => actor.name === normalizedName)) {
+      throw new WorkflowError("DuplicateActorName", `Duplicate actor name: ${normalizedName}`);
     }
     this.actors.set(id, actor);
     this.actorSequences.set(id, 0);
@@ -172,10 +171,14 @@ export class WorkflowEngine implements WorkflowHostApi {
     actorSeq: number,
   ): Promise<void> {
     try {
-      const session = record.sessionId === undefined
-        ? await this.options.driver.createActorSession(actorRef, record.persona ?? {})
-        : ({ id: record.sessionId } satisfies SessionRef);
-      if (record.sessionId === undefined) {
+      const session = await this.options.driver.createActorSession(
+        actorRef,
+        record.persona ?? {},
+        record.sessionId === undefined
+          ? undefined
+          : { sourceSessionId: record.sessionId, messageCount: record.sessionMessageCount ?? 0, resolvedModel: record.resolvedModel },
+      );
+      if (record.sessionId !== session.id) {
         record.sessionId = session.id;
         this.replaceActor(record);
       }
