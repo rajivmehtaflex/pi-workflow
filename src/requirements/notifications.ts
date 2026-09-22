@@ -111,6 +111,7 @@ export class RequirementsNotifications {
   private timer?: NodeJS.Timeout;
   private disposed = false;
   private polling = false;
+  private lastProjectionSignature?: string;
 
   constructor(private readonly options: RequirementsNotificationsOptions) {
     this.intervalMs = Math.max(25, options.intervalMs ?? 250);
@@ -136,7 +137,6 @@ export class RequirementsNotifications {
           if (patch !== undefined) {
             try {
               current = this.options.repository.transition(current.requestId, current.state, patch);
-              this.options.onChange?.();
             } catch {
               continue;
             }
@@ -149,12 +149,24 @@ export class RequirementsNotifications {
           this.options.repository.transition(current.requestId, current.state, {
             notificationDelivered: true,
           });
-          this.options.onChange?.();
         } catch {
           // Leave the durable delivery bit unset so the next poll can retry.
         }
       }
-      this.options.onChange?.();
+      const signature = JSON.stringify(
+        this.options.repository.list(this.options.workspaceKey).map((request) => ({
+          requestId: request.requestId,
+          state: request.state,
+          attempts: request.attempts,
+          runId: request.runId,
+          notificationDelivered: request.notificationDelivered,
+          updatedAt: request.updatedAt,
+        })),
+      );
+      if (signature !== this.lastProjectionSignature) {
+        this.lastProjectionSignature = signature;
+        this.options.onChange?.();
+      }
     } finally {
       this.polling = false;
     }
