@@ -44,7 +44,7 @@ describe("SQLite workflow journal", () => {
     first.close();
 
     const second = await openWorkflowDatabase({ cwd, workspaceIdentity: "workspace-1" });
-    expect(second.db.pragma("user_version", { simple: true })).toBe(1);
+    expect(second.db.pragma("user_version", { simple: true })).toBe(2);
     await readFile(second.dbPath);
     second.close();
   });

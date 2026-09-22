@@ -1,6 +1,6 @@
 import type Database from "better-sqlite3";
 
-export const LATEST_SCHEMA_VERSION = 1;
+export const LATEST_SCHEMA_VERSION = 2;
 
 const migrations: Array<{ version: number; sql: string }> = [
   {
@@ -119,6 +119,40 @@ const migrations: Array<{ version: number; sql: string }> = [
         args_schema_json TEXT,
         updated_at INTEGER NOT NULL,
         PRIMARY KEY (scope, name)
+      );
+    `,
+  },
+  {
+    version: 2,
+    sql: `
+      CREATE TABLE IF NOT EXISTS workflow_requests (
+        request_id TEXT PRIMARY KEY,
+        workspace_key TEXT NOT NULL,
+        options_json TEXT NOT NULL,
+        state TEXT NOT NULL CHECK (state IN (
+          'queued','generating','validating','repairing','ready','launching','running',
+          'completed','failed','stopped'
+        )),
+        attempts INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+        source_text TEXT,
+        run_id TEXT UNIQUE REFERENCES workflow_runs(run_id) ON DELETE SET NULL,
+        diagnostics_json TEXT NOT NULL DEFAULT '[]',
+        assumptions_json TEXT NOT NULL DEFAULT '[]',
+        acceptance_criteria_json TEXT NOT NULL DEFAULT '[]',
+        error_json TEXT,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        notification_delivered INTEGER NOT NULL DEFAULT 0 CHECK (notification_delivered IN (0, 1))
+      );
+      CREATE INDEX IF NOT EXISTS workflow_requests_workspace_updated
+        ON workflow_requests(workspace_key, updated_at DESC);
+      CREATE TABLE IF NOT EXISTS workflow_request_attempts (
+        request_id TEXT NOT NULL REFERENCES workflow_requests(request_id) ON DELETE CASCADE,
+        attempt INTEGER NOT NULL CHECK (attempt >= 1),
+        source_text TEXT NOT NULL,
+        diagnostics_json TEXT NOT NULL DEFAULT '[]',
+        created_at INTEGER NOT NULL,
+        PRIMARY KEY (request_id, attempt)
       );
     `,
   },
