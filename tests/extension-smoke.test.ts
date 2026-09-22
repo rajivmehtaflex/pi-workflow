@@ -45,6 +45,7 @@ describe("workflow tool and UI projections", () => {
 
     expect(tools.map((tool) => tool.name)).toEqual([
       "create_workflow",
+      "create_workflow_from_requirements",
       "amend_workflow",
       "get_workflow_run",
       "list_workflow_runs",
@@ -120,7 +121,7 @@ describe("workflow tool and UI projections", () => {
     workflowExtension(pi, { createService });
 
     expect(pi.registerCommand).toHaveBeenCalledWith("workflow", expect.anything());
-    expect(pi.registerTool).toHaveBeenCalledTimes(9);
+    expect(pi.registerTool).toHaveBeenCalledTimes(10);
     const start = hooks.get("session_start");
     const shutdown = hooks.get("session_shutdown");
     expect(start).toBeDefined();

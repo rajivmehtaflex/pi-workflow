@@ -3,6 +3,7 @@ import type { TSchema } from "@sinclair/typebox";
 import { WorkflowError, toWorkflowErrorJson } from "../zcode-core/engine/errors.js";
 import {
   AmendWorkflowSchema,
+  CreateWorkflowFromRequirementsSchema,
   CreateWorkflowSchema,
   EvalWorkflowSnippetSchema,
   GetWorkflowRunSchema,
@@ -20,6 +21,7 @@ import {
   renderWorkflowToolResult,
 } from "../ui/renderers.js";
 import type { WorkflowRunService, WorkflowSourceInput } from "../service/run-service.js";
+import type { RequirementsCoordinator } from "../requirements/coordinator.js";
 
 export interface WorkflowToolUpdate {
   content: Array<{ type: "text"; text: string }>;
@@ -193,7 +195,47 @@ async function createWorkflow(
   return textResult(acceptedText(run), acceptedDetails(run));
 }
 
-export function registerWorkflowTools(pi: WorkflowToolApi, service: WorkflowRunService): void {
+async function createWorkflowFromRequirements(
+  coordinator: RequirementsCoordinator | undefined,
+  params: unknown,
+  signal: AbortSignal,
+  onUpdate: (update: WorkflowToolUpdate) => void,
+): Promise<WorkflowToolResult> {
+  if (coordinator === undefined)
+    throw new WorkflowError("DriverError", "Requirements workflow is not initialized");
+  const value = checked<Record<string, unknown>>(CreateWorkflowFromRequirementsSchema, params);
+  const request = coordinator.start({
+    requirements: String(value.requirements),
+    ...(typeof value.preview === "boolean" ? { preview: value.preview } : {}),
+    ...(typeof value.model === "string" ? { model: value.model } : {}),
+    ...(typeof value.thinking === "string" ? { thinking: value.thinking } : {}),
+    ...(typeof value.maxConcurrency === "number" ? { maxConcurrency: value.maxConcurrency } : {}),
+    ...(typeof value.requestId === "string" ? { requestId: value.requestId } : {}),
+  });
+  onUpdate({
+    content: [
+      { type: "text", text: `Requirements request ${request.requestId} is ${request.state}` },
+    ],
+    details: { requestId: request.requestId, status: request.state },
+  });
+  signal.addEventListener(
+    "abort",
+    () => {
+      void coordinator.stop(request.requestId).catch(() => undefined);
+    },
+    { once: true },
+  );
+  return textResult(`Requirements request accepted: ${request.requestId} (${request.state})`, {
+    requestId: request.requestId,
+    status: request.state,
+  });
+}
+
+export function registerWorkflowTools(
+  pi: WorkflowToolApi,
+  service: WorkflowRunService,
+  getRequirements?: () => RequirementsCoordinator | undefined,
+): void {
   const register = (
     name: string,
     label: string,
@@ -224,6 +266,14 @@ export function registerWorkflowTools(pi: WorkflowToolApi, service: WorkflowRunS
     workflowToolSchemas.create_workflow,
     async (_toolCallId, params, signal, onUpdate) =>
       createWorkflow(pi, service, params, signal, onUpdate),
+  );
+  register(
+    "create_workflow_from_requirements",
+    "Create workflow from requirements",
+    "Generate, validate, repair, and launch a durable workflow from plain-language requirements.",
+    workflowToolSchemas.create_workflow_from_requirements,
+    async (_toolCallId, params, signal, onUpdate) =>
+      createWorkflowFromRequirements(getRequirements?.(), params, signal, onUpdate),
   );
   register(
     "amend_workflow",

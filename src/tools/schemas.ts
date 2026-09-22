@@ -46,6 +46,18 @@ export const CreateWorkflowSchema = Type.Union([
   ),
 ]);
 
+export const CreateWorkflowFromRequirementsSchema = Type.Object(
+  {
+    requirements: Type.String({ minLength: 1, maxLength: 32 * 1024 }),
+    preview: Type.Optional(Type.Boolean()),
+    model: Type.Optional(Type.String({ minLength: 1, maxLength: 256 })),
+    thinking: Type.Optional(Type.String({ minLength: 1, maxLength: 32 })),
+    maxConcurrency: Type.Optional(Type.Integer({ minimum: 1, maximum: 16 })),
+    requestId: Type.Optional(Type.String({ minLength: 1, maxLength: 256 })),
+  },
+  { additionalProperties: false },
+);
+
 export const AmendWorkflowSchema = Type.Union([
   Type.Object(
     {
@@ -117,6 +129,7 @@ export const ResolveWorkflowQuestionSchema = Type.Object(
 
 export const workflowToolSchemas = {
   create_workflow: CreateWorkflowSchema,
+  create_workflow_from_requirements: CreateWorkflowFromRequirementsSchema,
   amend_workflow: AmendWorkflowSchema,
   get_workflow_run: GetWorkflowRunSchema,
   list_workflow_runs: ListWorkflowRunsSchema,
