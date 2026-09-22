@@ -6,6 +6,7 @@ export interface PiInvocationOptions {
   model?: string;
   thinking?: string;
   systemPromptPath?: string;
+  profile?: "actor" | "generation";
 }
 
 export interface PiInvocation {
@@ -16,6 +17,8 @@ export interface PiInvocation {
 export function resolvePiInvocation(options: PiInvocationOptions): PiInvocation {
   const args: string[] = options.runningScript === undefined ? [] : [options.runningScript];
   args.push("--mode", "json", "-p", "--session", options.sessionPath, "--no-extensions");
+  if (options.profile === "generation")
+    args.push("--no-tools", "--no-skills", "--no-prompt-templates");
   if (options.model !== undefined) args.push("--model", options.model);
   if (options.thinking !== undefined) args.push("--thinking", options.thinking);
   if (options.systemPromptPath !== undefined)
