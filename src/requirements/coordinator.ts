@@ -37,6 +37,7 @@ export interface RequirementsCoordinatorOptions {
   validate(source: string): LowerResult;
   launch?(input: RequirementsLaunchInput, signal: AbortSignal): Promise<RequirementsLaunchResult>;
   stopRun?(runId: string): Promise<void> | void;
+  resumeRun?(runId: string): Promise<RequirementsLaunchResult>;
   context?: string | (() => Promise<string> | string);
   now?: () => number;
   generationTimeoutMs?: number;
@@ -137,6 +138,16 @@ export class RequirementsCoordinator {
   async resume(requestId: string): Promise<RequirementsRequest> {
     const request = this.get(requestId);
     if (request.state === "running" && request.runId !== undefined) return request;
+    if (request.state === "stopped" && request.runId !== undefined) {
+      if (this.options.resumeRun === undefined) return request;
+      const accepted = await this.options.resumeRun(request.runId);
+      this.transitionIfCurrent(requestId, "stopped", {
+        state: "running",
+        runId: accepted.runId,
+        error: null,
+      });
+      return this.get(requestId);
+    }
     if (request.state === "failed" && request.attempts >= MAX_GENERATION_ATTEMPTS) return request;
     if (request.state === "ready" && request.input.preview === true) return request;
     if (!this.active.has(requestId)) this.begin(requestId);

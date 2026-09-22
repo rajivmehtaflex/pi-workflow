@@ -62,6 +62,8 @@ function createLazyService(slot: ServiceSlot): WorkflowRunService {
       return requireService(slot).repository;
     },
     createWorkflow: (input: CreateWorkflowInput) => requireService(slot).createWorkflow(input),
+    createWorkflowForRequest: (requestId: string, input: CreateWorkflowInput) =>
+      requireService(slot).createWorkflowForRequest(requestId, input),
     validate: (source: string) => requireService(slot).validate(source),
     validateSource: (source: WorkflowSourceInput) => requireService(slot).validateSource(source),
     amendRun: (runId: string, input: CreateWorkflowInput) =>

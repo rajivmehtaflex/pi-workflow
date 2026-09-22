@@ -27,6 +27,8 @@ import {
 } from "../zcode-core/compiler/lower.js";
 import { WorkflowEngine } from "../zcode-core/engine/engine.js";
 import { WorkflowError } from "../zcode-core/engine/errors.js";
+import { RequirementsRepository, RequirementsRepositoryError } from "../requirements/repository.js";
+import type { RequirementsRequest, RequestState } from "../requirements/types.js";
 import type {
   ArtifactVersionRecord,
   Caps,
@@ -72,6 +74,7 @@ export interface WorkflowRunServiceDependencies {
   workspaceIdentity?: string;
   database?: WorkflowDatabaseHandle;
   repository?: WorkflowRepository;
+  requirementsRepository?: RequirementsRepository;
   driverFactory?(options: PiWorkflowDriverOptions): WorkflowDriver;
   runWorkflow?(options: RunWorkflowScriptOptions): Promise<RunSettlement>;
   actorRunningScript?: string;
@@ -137,6 +140,7 @@ function errorForSettlement(settlement: RunSettlement): WorkflowError {
 
 export class WorkflowRunService {
   readonly repository: WorkflowRepository;
+  readonly requirementsRepository?: RequirementsRepository;
   readonly workspaceKey: string;
   readonly escalation: EscalationRegistry;
   private readonly active = new Map<string, ActiveRun>();
@@ -152,9 +156,13 @@ export class WorkflowRunService {
     this.repository = repository;
     this.ownedDatabase = database;
     this.dependencies = dependencies;
+    const sharedDatabase = database ?? dependencies.database;
     this.workspaceKey =
-      database?.workspaceKey ??
+      sharedDatabase?.workspaceKey ??
       (dependencies.workspaceIdentity?.trim() || resolve(dependencies.cwd));
+    this.requirementsRepository =
+      dependencies.requirementsRepository ??
+      (sharedDatabase === undefined ? undefined : new RequirementsRepository(sharedDatabase.db));
     this.runWorkflowImpl = dependencies.runWorkflow ?? runWorkflowScript;
     this.escalation = new EscalationRegistry({
       persistence: repository,
@@ -196,12 +204,110 @@ export class WorkflowRunService {
     };
     this.persistLaunch(record, input.model, lowered);
     this.launch(record, lowered, input.model, input.thinking);
-    return {
-      runId: record.runId,
-      status: "pending",
+    return this.acceptedRun(record, lowered);
+  }
+
+  async createWorkflowForRequest(
+    requestId: string,
+    input: CreateWorkflowInput,
+  ): Promise<AcceptedWorkflowRun> {
+    const requests = this.requirementsRepository;
+    if (requests === undefined)
+      throw new WorkflowError(
+        "DriverError",
+        "Requirements request persistence is not configured for this workflow service",
+      );
+
+    let request = requests.get(requestId);
+    this.assertRequestWorkspace(request);
+    if (request.state === "stopped")
+      throw new WorkflowError("Cancelled", `Requirements request was stopped: ${requestId}`);
+    if (request.input.preview === true)
+      throw new WorkflowError("Cancelled", `Preview request cannot be launched: ${requestId}`);
+
+    if (request.runId !== undefined) {
+      const existing = this.repository.getRun(request.runId);
+      if (existing === undefined)
+        throw new WorkflowError(
+          "Interrupted",
+          `Requirements request ${requestId} references a missing workflow run`,
+        );
+      return this.acceptedExistingRun(existing);
+    }
+
+    const supplied = await this.resolveSource(input.source);
+    const sourceText = request.source ?? supplied.text;
+    if (request.source !== undefined && supplied.text !== request.source)
+      throw new WorkflowError(
+        "ScriptHashMismatch",
+        "The supplied workflow source does not match the generated requirements source",
+      );
+    const lowered = this.compileSource(sourceText, input.caps);
+    const model = input.model ?? request.input.model;
+    const thinking = input.thinking ?? request.input.thinking;
+    const caps =
+      input.caps ??
+      (request.input.maxConcurrency === undefined
+        ? undefined
+        : { maxConcurrency: request.input.maxConcurrency });
+    const record: RunRecord = {
+      runId: runId(),
+      workspaceKey: this.workspaceKey,
+      cwd: resolve(this.dependencies.cwd),
+      ...(input.name === undefined ? {} : { name: input.name }),
+      ...(input.parentSessionId === undefined ? {} : { parentSessionId: input.parentSessionId }),
+      ...(input.toolCallId === undefined ? {} : { toolCallId: input.toolCallId }),
+      ...(supplied.path === undefined ? {} : { scriptPath: supplied.path }),
+      scriptText: sourceText,
       scriptHash: lowered.scriptHash,
-      graph: lowered.graph,
+      args: input.args ?? {},
+      caps: defaultCaps(caps),
+      ...(model === undefined ? {} : { subagentModel: model }),
+      spentTokens: 0,
+      status: "pending",
+      createdAt: Date.now(),
     };
+
+    let accepted: AcceptedWorkflowRun | undefined;
+    let launchRecord: RunRecord | undefined;
+    this.repository.transaction(() => {
+      request = requests.get(requestId);
+      this.assertRequestWorkspace(request);
+      if (request.state === "stopped")
+        throw new WorkflowError("Cancelled", `Requirements request was stopped: ${requestId}`);
+      if (request.input.preview === true)
+        throw new WorkflowError("Cancelled", `Preview request cannot be launched: ${requestId}`);
+      if (request.runId !== undefined) {
+        const existing = this.repository.getRun(request.runId);
+        if (existing === undefined)
+          throw new WorkflowError(
+            "Interrupted",
+            `Requirements request ${requestId} references a missing workflow run`,
+          );
+        accepted = this.acceptedExistingRun(existing);
+        return;
+      }
+      if (request.state !== "ready" && request.state !== "launching")
+        throw new WorkflowError(
+          "DriverError",
+          `Requirements request ${requestId} is not ready to launch (${request.state})`,
+        );
+      if (request.source !== undefined && request.source !== sourceText)
+        throw new WorkflowError(
+          "ScriptHashMismatch",
+          "The generated requirements source changed before admission",
+        );
+      this.persistLaunch(record, model, lowered);
+      requests.transition(requestId, request.state, {
+        state: "running",
+        runId: record.runId,
+      });
+      launchRecord = record;
+      accepted = this.acceptedRun(record, lowered);
+    });
+
+    if (launchRecord !== undefined) this.launch(launchRecord, lowered, model, thinking);
+    return accepted!;
   }
 
   async resumeRun(
@@ -365,7 +471,9 @@ export class WorkflowRunService {
   }
 
   reconcile(): RunRecord[] {
-    return reconcileNonTerminalRuns(this.repository, this.workspaceKey);
+    const recovered = reconcileNonTerminalRuns(this.repository, this.workspaceKey);
+    this.reconcileRequirements();
+    return recovered;
   }
 
   async dispose(): Promise<void> {
@@ -390,6 +498,99 @@ export class WorkflowRunService {
       });
     }
     return result.lowered;
+  }
+
+  private acceptedRun(record: RunRecord, lowered: LoweredWorkflow): AcceptedWorkflowRun {
+    return {
+      runId: record.runId,
+      status: "pending",
+      scriptHash: lowered.scriptHash,
+      graph: lowered.graph,
+    };
+  }
+
+  private acceptedExistingRun(record: RunRecord): AcceptedWorkflowRun {
+    const source = record.scriptText ?? "";
+    if (source.length === 0)
+      throw new WorkflowError(
+        "Interrupted",
+        `Workflow run has no persisted source: ${record.runId}`,
+      );
+    return this.acceptedRun(record, this.compileSource(source, record.caps));
+  }
+
+  private assertRequestWorkspace(request: RequirementsRequest): void {
+    if (request.workspaceKey !== this.workspaceKey)
+      throw new RequirementsRepositoryError(
+        "WorkspaceMismatch",
+        `Request ${request.requestId} belongs to another workspace`,
+      );
+  }
+
+  private reconcileRequirements(): void {
+    const requests = this.requirementsRepository;
+    if (requests === undefined) return;
+    for (const request of requests.list(this.workspaceKey)) {
+      if (request.runId === undefined) {
+        if (
+          ["queued", "generating", "validating", "repairing", "launching"].includes(request.state)
+        )
+          this.transitionRequirement(request, {
+            state: "stopped",
+            error: {
+              code: "Interrupted",
+              message: "Requirements processing was interrupted; resume explicitly to retry",
+            },
+          });
+        continue;
+      }
+
+      const run = this.repository.getRun(request.runId);
+      if (run === undefined) {
+        this.transitionRequirement(request, {
+          state: "stopped",
+          error: {
+            code: "Interrupted",
+            message: "The linked workflow run is missing; resume explicitly to retry",
+          },
+        });
+        continue;
+      }
+      if (run.status === "completed") {
+        if (request.state !== "completed")
+          this.transitionRequirement(request, { state: "completed", error: null });
+      } else if (run.status === "errored") {
+        if (request.state !== "failed")
+          this.transitionRequirement(request, {
+            state: "failed",
+            error: {
+              code: run.failure?.code ?? "ExecutionFailed",
+              message: run.failure?.message ?? "The linked workflow run failed",
+            },
+          });
+      } else if (run.status === "stopped") {
+        if (request.state !== "stopped")
+          this.transitionRequirement(request, {
+            state: "stopped",
+            error: {
+              code: "Interrupted",
+              message: "The linked workflow run was interrupted; resume explicitly to retry",
+            },
+          });
+      }
+    }
+  }
+
+  private transitionRequirement(
+    request: RequirementsRequest,
+    patch: { state: RequestState; error?: { code: string; message: string } | null },
+  ): void {
+    try {
+      this.requirementsRepository?.transition(request.requestId, request.state, patch);
+    } catch (error) {
+      if (error instanceof RequirementsRepositoryError && error.code === "StaleRequest") return;
+      throw error;
+    }
   }
 
   private persistLaunch(
