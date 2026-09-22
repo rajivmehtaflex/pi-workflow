@@ -8,6 +8,11 @@ The repository is distributed as source. The package's `prepare` lifecycle build
 `dist/` automatically when Pi installs it from GitHub; source development still requires
 an explicit build.
 
+You do not need to write a TypeScript workflow for the automatic flow. Give Pi a
+requirement in natural language; the extension generates a bounded workflow candidate,
+compiles it, repairs compiler errors when possible, launches it, and reports the durable
+result.
+
 ## Requirements
 
 - Node.js 24.x
@@ -116,17 +121,23 @@ The command should report that the workflow is valid and create the workspace-lo
 The extension registers the `/workflow` command with these actions:
 
 ```text
+/workflow auto [--preview] [--model <provider/model[:thinking]>] [--thinking <level>] [--max-concurrency <n>] [--request-id <id>] [-- <requirements>]
 /workflow run <path|project:name|global:name> [--args <json>] [--model <provider/model[:thinking]>] [--max-concurrency <n>]
 /workflow validate <path|project:name|global:name>
 /workflow list [--limit <n>]
-/workflow status [<runId>]
-/workflow resume <runId>
-/workflow stop [<runId>]
+/workflow status [<runId>|request:<requestId>]
+/workflow resume <runId>|request:<requestId>
+/workflow stop [<runId>|request:<requestId>]
 ```
 
 Examples:
 
 ```text
+/workflow auto Review changed files, identify bugs, and produce an action plan.
+/workflow auto --preview -- Review changed files and summarize risks.
+/workflow status request:request-abc
+/workflow stop request:request-abc
+/workflow resume request:request-abc
 /workflow validate workflows/review.ts
 /workflow list --limit 10
 /workflow run workflows/review.ts --args {"topic":"release"} --max-concurrency 2
@@ -138,6 +149,28 @@ Examples:
 model-backed actors, so Pi must have a configured provider credential. The `--model` value
 may be a provider/model identifier with an optional thinking level, for example
 `provider/model:low`.
+
+`auto` preserves requirement text after recognized leading options, including spaces,
+multiline text, quotes, and embedded JSON. Use `--` when the requirement begins with an
+option-like string. `--preview` generates and validates the source but leaves the request
+in `ready` without launching a run. The accepted source is exported for inspection at
+`.pi/workflow-requests/<requestId>/workflow.ts`; the request and run remain in
+`.pi/workflows.db`.
+
+Generation allows one initial model call and up to two compiler-repair calls. Requirements
+are limited to 32 KiB, generated output to 256 KiB, and concurrency to 1–16 (default 2).
+If generation is stopped before admission, no workflow run is launched. Stopping an
+executing request stops its linked run; resuming a stopped linked run is explicit and does
+not generate a replacement automatically.
+
+`/workflow status request:<requestId>` shows request state, diagnostics, assumptions,
+acceptance criteria, and the linked run result when available. A `completed` result means
+the workflow engine completed and returned a value; it does not independently prove every
+business acceptance criterion. The terminal notification includes that limitation.
+
+Requests and runs are durable across Pi restarts. Interrupted generation is marked stopped;
+an interrupted linked execution is not replayed automatically. Use the request-scoped
+`resume` command after reviewing its status.
 
 Saved workflows can be addressed as `project:name` or `global:name`:
 
@@ -151,17 +184,18 @@ Saved workflows can be addressed as `project:name` or `global:name`:
 Pi exposes these tools to the model. Tool calls use JSON arguments; the examples below
 show the argument payload for each tool.
 
-| Tool                        | Example arguments                                                               |
-| --------------------------- | ------------------------------------------------------------------------------- |
-| `create_workflow`           | `{"path":"workflows/review.ts","maxConcurrency":2}`                             |
-| `amend_workflow`            | `{"runId":"01J...RUN_ID","path":"workflows/review-v2.ts"}`                      |
-| `get_workflow_run`          | `{"runId":"01J...RUN_ID"}`                                                      |
-| `list_workflow_runs`        | `{"limit":10}`                                                                  |
-| `eval_workflow_snippet`     | `{"script":"phase(\"Check\"); return { ok: true };"}`                           |
-| `resume_workflow_run`       | `{"runId":"01J...RUN_ID"}`                                                      |
-| `save_workflow`             | `{"scope":"project","name":"release-review","sourceText":"phase(\"Review\");"}` |
-| `list_saved_workflows`      | `{"scope":"project"}`                                                           |
-| `resolve_workflow_question` | `{"qid":"question-id","answer":"yes"}`                                          |
+| Tool                                | Example arguments                                                               |
+| ----------------------------------- | ------------------------------------------------------------------------------- |
+| `create_workflow_from_requirements` | `{"requirements":"Review changed files","preview":false}`                       |
+| `create_workflow`                   | `{"path":"workflows/review.ts","maxConcurrency":2}`                             |
+| `amend_workflow`                    | `{"runId":"01J...RUN_ID","path":"workflows/review-v2.ts"}`                      |
+| `get_workflow_run`                  | `{"runId":"01J...RUN_ID"}`                                                      |
+| `list_workflow_runs`                | `{"limit":10}`                                                                  |
+| `eval_workflow_snippet`             | `{"script":"phase(\"Check\"); return { ok: true };"}`                           |
+| `resume_workflow_run`               | `{"runId":"01J...RUN_ID"}`                                                      |
+| `save_workflow`                     | `{"scope":"project","name":"release-review","sourceText":"phase(\"Review\");"}` |
+| `list_saved_workflows`              | `{"scope":"project"}`                                                           |
+| `resolve_workflow_question`         | `{"qid":"question-id","answer":"yes"}`                                          |
 
 For example, ask Pi to “evaluate this workflow snippet” and it can use
 `eval_workflow_snippet`; ask it to “start the review workflow from
