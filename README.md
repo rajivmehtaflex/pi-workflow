@@ -4,17 +4,39 @@ This package adds a durable `/workflow` command and workflow tools to Pi. A work
 compiled by the ZCode-compatible engine, persisted in SQLite, and executed with bounded
 child Pi processes.
 
-The repository is distributed as source. Build `dist/` before registering the extension.
+The repository is distributed as source. The package's `prepare` lifecycle builds
+`dist/` automatically when Pi installs it from GitHub; source development still requires
+an explicit build.
 
 ## Requirements
 
 - Node.js 24.x
 - Corepack with pnpm 10.33.2
-- Pi 0.86.x, which is the currently tested peer range in `package.json`
+- Pi 0.86.0 or newer
 - A provider credential for live model-backed workflow runs
 
 Validation, listing, snippet evaluation, and the fake-Pi tests do not require a provider
 credential.
+
+## Install directly from GitHub
+
+Pi can install the extension directly from the repository. The install lifecycle builds
+the compiled extension before Pi registers it:
+
+```bash
+pi install https://github.com/rajivmehtaflex/pi-workflow.git --approve
+pi list --approve
+```
+
+To keep the installation project-local instead of user-global, add `--local`:
+
+```bash
+pi install https://github.com/rajivmehtaflex/pi-workflow.git --local --approve
+pi list --approve
+```
+
+Run `pi list` from the project where a project-local package was installed. Pi does not
+search child directories for package settings.
 
 ## Install from source
 
@@ -158,9 +180,9 @@ actor sessions, and artifacts live beneath `<workspace>/.pi/workflow-runs/`.
 ## Pi version note
 
 The extension uses a structural Pi host boundary and keeps optional UI and renderer hooks
-optional. The checked-in package metadata currently declares the tested range
-`>=0.86.0 <0.87.0`; use the lockfile-resolved local Pi executable unless you have
-verified compatibility with another host version.
+optional. The package metadata accepts Pi host packages `>=0.86.0` without an artificial
+upper bound, so Pi 0.87 and later hosts can install it. A future host that removes one of
+the required extension APIs would still require an adapter change.
 
 ## Development checks
 
