@@ -5,7 +5,9 @@ export interface WorkflowChildProcessOptions {
   cwd: string;
 }
 
-export function spawnWorkflowChild(options: WorkflowChildProcessOptions): ChildProcessWithoutNullStreams {
+export function spawnWorkflowChild(
+  options: WorkflowChildProcessOptions,
+): ChildProcessWithoutNullStreams {
   return spawn(process.execPath, [options.entryPath], {
     cwd: options.cwd,
     detached: process.platform !== "win32",
@@ -18,10 +20,14 @@ export function spawnWorkflowChild(options: WorkflowChildProcessOptions): ChildP
   });
 }
 
-export async function terminateWorkflowChild(child: ChildProcessWithoutNullStreams, graceMs = 100): Promise<void> {
+export async function terminateWorkflowChild(
+  child: ChildProcessWithoutNullStreams,
+  graceMs = 100,
+): Promise<void> {
   if (child.exitCode !== null || child.signalCode !== null) return;
   try {
-    if (process.platform !== "win32" && child.pid !== undefined) process.kill(-child.pid, "SIGTERM");
+    if (process.platform !== "win32" && child.pid !== undefined)
+      process.kill(-child.pid, "SIGTERM");
     else child.kill("SIGTERM");
   } catch {
     child.kill("SIGTERM");
@@ -29,7 +35,8 @@ export async function terminateWorkflowChild(child: ChildProcessWithoutNullStrea
   await new Promise<void>((resolve) => {
     const timer = setTimeout(() => {
       try {
-        if (process.platform !== "win32" && child.pid !== undefined) process.kill(-child.pid, "SIGKILL");
+        if (process.platform !== "win32" && child.pid !== undefined)
+          process.kill(-child.pid, "SIGKILL");
         else child.kill("SIGKILL");
       } catch {
         child.kill("SIGKILL");

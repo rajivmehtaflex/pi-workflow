@@ -36,6 +36,21 @@ and artifacts live beneath `<workspace>/.pi/workflow-runs/` and are ignored by t
 workspace. A missing provider credential prevents only live-Agent verification; fake-Pi tests
 cover the process protocol without credentials.
 
+## Manual Pi smoke
+
+From a disposable target workspace, build this package and run the deterministic
+no-network validation fixture through the pinned Pi executable:
+
+```bash
+pnpm build
+pi --version
+pi --extension ./dist/index.js --mode json \
+  -p '/workflow validate tests/fixtures/workflows/typed-review.ts'
+```
+
+The smoke should create `.pi/workflows.db` only in the target workspace. Provider
+credentials are not required for validation, command registration, or fake-Pi tests.
+
 ## Auto-commit and push
 
 This repository includes a 2-minute runner that automatically stages, commits, and pushes changes to GitHub:
@@ -46,4 +61,3 @@ npm run auto-commit:status  # Check daemon status
 npm run auto-commit:stop    # Stop background daemon
 bash scripts/auto-commit.sh once # Run single commit and push cycle
 ```
-

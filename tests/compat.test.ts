@@ -8,8 +8,7 @@ import type {
 } from "../src/zcode-core/engine/types.js";
 import { analyzeWorkflowScript, lowerWorkflowScript } from "../src/zcode-core/index.js";
 
-const fixture = (name: string): string =>
-  new URL(`./fixtures/${name}`, import.meta.url).pathname;
+const fixture = (name: string): string => new URL(`./fixtures/${name}`, import.meta.url).pathname;
 
 describe("Pi workflow compatibility contract", () => {
   it("recognizes the pinned Pi JSON event fixture and authoritative message_end", async () => {
@@ -58,10 +57,7 @@ describe("Pi workflow compatibility contract", () => {
 
     expect(result.ok).toBe(true);
     expect(result.graph?.sites.some((site) => site.kind === "world-read")).toBe(true);
-    expect(result.declaredArtifacts.map((artifact) => artifact.id)).toEqual([
-      "health",
-      "summary",
-    ]);
+    expect(result.declaredArtifacts.map((artifact) => artifact.id)).toEqual(["health", "summary"]);
   });
 
   it("rejects the legacy createActor API and arbitrary imports", () => {
@@ -74,8 +70,13 @@ describe("Pi workflow compatibility contract", () => {
   });
 
   it("keeps the current run and host contracts assignable", () => {
-    const statuses = ["pending", "running", "completed", "errored", "stopped"] as const satisfies
-      readonly RunStatus[];
+    const statuses = [
+      "pending",
+      "running",
+      "completed",
+      "errored",
+      "stopped",
+    ] as const satisfies readonly RunStatus[];
     const started = {
       type: "run-started",
       runId: "run-compat",

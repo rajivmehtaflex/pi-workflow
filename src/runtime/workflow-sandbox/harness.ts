@@ -35,7 +35,31 @@ export interface RunWorkflowScriptOptions {
 }
 
 function errorWire(error: unknown): WireError {
-  if (typeof error === "object" && error !== null && "code" in error && "message" in error && typeof error.code === "string" && typeof error.message === "string") return { code: error.code, message: error.message };
+  if (
+    typeof error === "object" &&
+    error !== null &&
+    "json" in error &&
+    typeof error.json === "object" &&
+    error.json !== null &&
+    "code" in error.json &&
+    "message" in error.json &&
+    typeof error.json.code === "string" &&
+    typeof error.json.message === "string"
+  )
+    return { code: error.json.code, message: error.json.message, details: error.json };
+  if (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    "message" in error &&
+    typeof error.code === "string" &&
+    typeof error.message === "string"
+  ) {
+    const record = error as Record<string, unknown>;
+    const details =
+      typeof record.details === "object" && record.details !== null ? record.details : error;
+    return { code: error.code, message: error.message, details };
+  }
   if (error instanceof Error) return { code: "DriverError", message: error.message };
   return { code: "DriverError", message: String(error) };
 }
@@ -44,7 +68,13 @@ export async function runWorkflowScript(options: RunWorkflowScriptOptions): Prom
   const runDir = join(options.cwd, ".pi", "workflow-runs", options.runId);
   let entryPath: string;
   try {
-    entryPath = await writeWorkflowEntryFile({ runDir, runId: options.runId, code: options.code, args: options.args, source: options.entrySource });
+    entryPath = await writeWorkflowEntryFile({
+      runDir,
+      runId: options.runId,
+      code: options.code,
+      args: options.args,
+      source: options.entrySource,
+    });
   } catch (error) {
     return { status: "stopped", stopReason: "interrupted", error: errorWire(error) };
   }
@@ -66,11 +96,16 @@ export async function runWorkflowScript(options: RunWorkflowScriptOptions): Prom
     resolveSettlement(settlement);
     void terminateWorkflowChild(child).catch(() => undefined);
   };
-  const protocolFailure = (error: unknown): void => finish({ status: "stopped", stopReason: "interrupted", error: errorWire(error) });
+  const protocolFailure = (error: unknown): void =>
+    finish({ status: "stopped", stopReason: "interrupted", error: errorWire(error) });
   const handle = (message: ReturnType<typeof parser.push>[number]): void => {
     if (settled) return;
     if (message.kind === "complete") {
-      if (message.ok) finish({ status: "completed", ...(message.value === undefined ? {} : { value: message.value }) });
+      if (message.ok)
+        finish({
+          status: "completed",
+          ...(message.value === undefined ? {} : { value: message.value }),
+        });
       else finish({ status: "errored", ...(message.error ? { error: message.error } : {}) });
       return;
     }
@@ -83,7 +118,9 @@ export async function runWorkflowScript(options: RunWorkflowScriptOptions): Prom
       return;
     }
     if (seenRequests.has(message.id)) {
-      protocolFailure(new WorkflowProtocolError(`Duplicate request id: ${message.id}`, "DuplicateRequest"));
+      protocolFailure(
+        new WorkflowProtocolError(`Duplicate request id: ${message.id}`, "DuplicateRequest"),
+      );
       return;
     }
     seenRequests.add(message.id);
@@ -91,10 +128,26 @@ export async function runWorkflowScript(options: RunWorkflowScriptOptions): Prom
       .then(() => options.onRequest?.(message))
       .then(
         (value) => {
-          if (!settled) child.stdin.write(encodeParentMessage({ kind: "response", id: message.id, ok: true, ...(value === undefined ? {} : { value }) }));
+          if (!settled)
+            child.stdin.write(
+              encodeParentMessage({
+                kind: "response",
+                id: message.id,
+                ok: true,
+                ...(value === undefined ? {} : { value }),
+              }),
+            );
         },
         (error) => {
-          if (!settled) child.stdin.write(encodeParentMessage({ kind: "response", id: message.id, ok: false, error: errorWire(error) }));
+          if (!settled)
+            child.stdin.write(
+              encodeParentMessage({
+                kind: "response",
+                id: message.id,
+                ok: false,
+                error: errorWire(error),
+              }),
+            );
         },
       )
       .catch(protocolFailure);
@@ -108,22 +161,39 @@ export async function runWorkflowScript(options: RunWorkflowScriptOptions): Prom
   });
   child.stderr.on("data", (chunk: Buffer) => {
     stderrBytes += chunk.byteLength;
-    if (stderrBytes > (options.maxStderrBytes ?? 64 * 1024)) protocolFailure(new WorkflowProtocolError("Child stderr exceeds limit", "StderrTooLarge"));
+    if (stderrBytes > (options.maxStderrBytes ?? 64 * 1024))
+      protocolFailure(new WorkflowProtocolError("Child stderr exceeds limit", "StderrTooLarge"));
   });
   child.on("error", protocolFailure);
   child.on("close", (code) => {
     if (settled) return;
     try {
       parser.end();
-      finish({ status: "stopped", stopReason: "interrupted", error: { code: "ChildExit", message: `Workflow child exited before complete (code ${code ?? "unknown"})` } });
+      finish({
+        status: "stopped",
+        stopReason: "interrupted",
+        error: {
+          code: "ChildExit",
+          message: `Workflow child exited before complete (code ${code ?? "unknown"})`,
+        },
+      });
     } catch (error) {
       protocolFailure(error);
     }
   });
-  timer = setTimeout(() => protocolFailure(new WorkflowProtocolError("Workflow child timed out", "Timeout")), options.timeoutMs ?? 300_000);
+  timer = setTimeout(
+    () => protocolFailure(new WorkflowProtocolError("Workflow child timed out", "Timeout")),
+    options.timeoutMs ?? 300_000,
+  );
   if (options.signal !== undefined) {
-    if (options.signal.aborted) protocolFailure(new WorkflowProtocolError("Workflow run aborted", "Aborted"));
-    else options.signal.addEventListener("abort", () => protocolFailure(new WorkflowProtocolError("Workflow run aborted", "Aborted")), { once: true });
+    if (options.signal.aborted)
+      protocolFailure(new WorkflowProtocolError("Workflow run aborted", "Aborted"));
+    else
+      options.signal.addEventListener(
+        "abort",
+        () => protocolFailure(new WorkflowProtocolError("Workflow run aborted", "Aborted")),
+        { once: true },
+      );
   }
   return result;
 }

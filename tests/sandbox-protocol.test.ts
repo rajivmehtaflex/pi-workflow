@@ -33,7 +33,9 @@ describe("Boundary-A NDJSON protocol", () => {
 
   it("rejects malformed, unknown, and oversized messages", () => {
     expect(() => parseChildMessage("not-json")).toThrow(WorkflowProtocolError);
-    expect(() => parseChildMessage(JSON.stringify({ kind: "unknown" }))).toThrow(WorkflowProtocolError);
+    expect(() => parseChildMessage(JSON.stringify({ kind: "unknown" }))).toThrow(
+      WorkflowProtocolError,
+    );
     const parser = new NdjsonLineParser({ maxLineBytes: 8 });
     expect(() => parser.push(Buffer.from('{"kind":"event"}\n'))).toThrow(WorkflowProtocolError);
   });

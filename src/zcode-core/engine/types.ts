@@ -18,6 +18,7 @@ export type ArtifactPresetOp = "chart" | "table" | "metrics" | "board";
 
 export interface Caps {
   maxConcurrency: number;
+  maxRepairAttempts?: number;
   maxScriptBytes?: number;
   maxEventBytes?: number;
 }
@@ -36,8 +37,18 @@ export interface PersonaSpec {
 export interface AskMessage {
   instructions: string;
   typed: boolean;
-  schema?: unknown;
+  schema?: WorkflowValueSchema;
 }
+
+export type WorkflowValueSchema =
+  | { type: "string" | "number" | "boolean" | "null" }
+  | { type: "literal"; value: string | number | boolean | null }
+  | { type: "array"; items: WorkflowValueSchema }
+  | {
+      type: "object";
+      properties: Record<string, { schema: WorkflowValueSchema; optional: boolean }>;
+    }
+  | { type: "union"; variants: WorkflowValueSchema[] };
 
 export interface Violation {
   path: string;
@@ -207,6 +218,7 @@ export interface JournalStorePort {
   updateNode?(record: NodeRecord): void;
   getNode(runId: string, siteId: string, ordinal: number): NodeRecord | undefined;
   listNodes(runId: string): NodeRecord[];
+  insertArtifactVersion?(runId: string, artifact: ArtifactVersionRecord): ArtifactVersionRecord;
   appendEvent(runId: string, event: RunEvent): StoredEvent;
   listEvents(runId: string, options?: ListEventsOptions): StoredEvent[];
 }
@@ -224,6 +236,24 @@ export interface ActorSessionSeed {
   sourceSessionId: string;
   messageCount: number;
   resolvedModel?: string;
+}
+
+export interface ImportedActorStatePort {
+  matches(persona: PersonaSpec): boolean;
+  take(
+    actorSeq: number,
+    inputHash: string,
+  ): { result: unknown; messageBoundary?: number } | undefined;
+  seed(): ActorSessionSeed | undefined;
+}
+
+export interface ImportedWorldStatePort {
+  take(inputHash: string, kind: NodeKind): { result: unknown } | undefined;
+}
+
+export interface ImportedRuntimeCachePort {
+  actors: ReadonlyMap<string, ImportedActorStatePort>;
+  world: ImportedWorldStatePort;
 }
 
 export interface ArtifactPublishRequest {
@@ -272,7 +302,13 @@ export type RunEvent =
       subagentModel?: string;
       scriptPath?: string;
     }
-  | { type: "actor-created"; actor: ActorRef; name?: string; persona?: PersonaSpec; phaseName?: string }
+  | {
+      type: "actor-created";
+      actor: ActorRef;
+      name?: string;
+      persona?: PersonaSpec;
+      phaseName?: string;
+    }
   | {
       type: "node-queued";
       instance: InstanceRef;
@@ -284,13 +320,37 @@ export type RunEvent =
   | { type: "node-dispatched"; instance: InstanceRef }
   | { type: "node-repairing"; instance: InstanceRef; attempt: number; violations: Violation[] }
   | { type: "node-nudged"; instance: InstanceRef }
-  | { type: "node-settled"; instance: InstanceRef; outcome: NodeOutcome; cached?: boolean; error?: WorkflowErrorJson }
+  | {
+      type: "node-settled";
+      instance: InstanceRef;
+      outcome: NodeOutcome;
+      cached?: boolean;
+      error?: WorkflowErrorJson;
+    }
   | { type: "usage-updated"; spentTokens: number }
   | { type: "log"; message: string }
   | { type: "phase-entered"; name: string; ordinal: number }
   | { type: "report"; instance: InstanceRef; item: unknown; artifactId?: string }
   | { type: "artifact-published"; instance: InstanceRef; artifact: ArtifactVersionRecord }
-  | { type: "artifact-failed"; instance: InstanceRef; id: string; op: ArtifactContentOp; error: WorkflowErrorJson }
-  | { type: "escalation-requested"; qid: string; question: string; context?: string; askedAt: number }
+  | {
+      type: "artifact-failed";
+      instance: InstanceRef;
+      id: string;
+      op: ArtifactContentOp;
+      error: WorkflowErrorJson;
+    }
+  | {
+      type: "escalation-requested";
+      qid: string;
+      question: string;
+      context?: string;
+      askedAt: number;
+    }
   | { type: "escalation-resolved"; qid: string; answer: string }
-  | { type: "run-settled"; status: RunStatus; stopReason?: RunStopReason; supersededBy?: string; error?: WorkflowErrorJson };
+  | {
+      type: "run-settled";
+      status: RunStatus;
+      stopReason?: RunStopReason;
+      supersededBy?: string;
+      error?: WorkflowErrorJson;
+    };

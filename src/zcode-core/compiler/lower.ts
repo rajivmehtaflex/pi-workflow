@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import ts from "typescript";
-import { createWorkflowProgram } from "./compile.js";
+import { createWorkflowProgram, SCRIPT_FILE_NAME } from "./compile.js";
 import { analyzeWorkflowScript } from "../analysis/analyze.js";
 import type { WorkflowGraph } from "../analysis/types.js";
 import type { CompileDiagnostic } from "./compile.js";
@@ -28,7 +28,8 @@ function literalText(node: ts.Expression | undefined, source: ts.SourceFile): st
 }
 
 function chain(expression: ts.Expression): { root: string; property: string } | undefined {
-  if (!ts.isPropertyAccessExpression(expression) || !ts.isIdentifier(expression.expression)) return undefined;
+  if (!ts.isPropertyAccessExpression(expression) || !ts.isIdentifier(expression.expression))
+    return undefined;
   return { root: expression.expression.text, property: expression.name.text };
 }
 
@@ -48,7 +49,8 @@ function collectReplacements(source: ts.SourceFile, offset: number): Replacement
       } else if (ts.isIdentifier(expression) && expression.text === "log") {
         text = `__host.log(${literalText(node.arguments[0], source)})`;
       } else if (ts.isIdentifier(expression) && expression.text === "report") {
-        const artifact = node.arguments[1] === undefined ? "" : `, ${literalText(node.arguments[1], source)}`;
+        const artifact =
+          node.arguments[1] === undefined ? "" : `, ${literalText(node.arguments[1], source)}`;
         text = `__host.report("report#${++reportCount}", ${literalText(node.arguments[0], source)}${artifact})`;
       } else if (ts.isIdentifier(expression) && expression.text === "agent") {
         const name = literalText(node.arguments[0], source);
@@ -66,14 +68,22 @@ function collectReplacements(source: ts.SourceFile, offset: number): Replacement
             ? "declareArtifact"
             : "publishArtifact";
           text = `__host.${method}("artifact#${++artifactCount}", "${op}", [${args}])`;
-        } else if (current?.root === "files" || current?.root === "git" || current?.root === "world") {
+        } else if (
+          current?.root === "files" ||
+          current?.root === "git" ||
+          current?.root === "world"
+        ) {
           const args = node.arguments.map((argument) => argument.getText(source)).join(", ");
           const op = `${current.root}.${current.property}`;
           text = `__host.worldRead("world#${++worldCount}", "${op}", [${args}])`;
         }
       }
       if (text !== undefined) {
-        replacements.push({ start: node.getStart(source) - offset, end: node.getEnd() - offset, text });
+        replacements.push({
+          start: node.getStart(source) - offset,
+          end: node.getEnd() - offset,
+          text,
+        });
       }
     }
     ts.forEachChild(node, visit);
@@ -93,7 +103,15 @@ export function lowerWorkflowScript(scriptText: string): LowerResult {
     (left, right) => right.start - left.start,
   );
   let code = scriptText;
-  for (const replacement of replacements) code = `${code.slice(0, replacement.start)}${replacement.text}${code.slice(replacement.end)}`;
+  for (const replacement of replacements)
+    code = `${code.slice(0, replacement.start)}${replacement.text}${code.slice(replacement.end)}`;
+  code = ts.transpileModule(code, {
+    compilerOptions: {
+      module: ts.ModuleKind.ESNext,
+      target: ts.ScriptTarget.ES2022,
+    },
+    fileName: SCRIPT_FILE_NAME,
+  }).outputText;
   return {
     ok: true,
     diagnostics: [],

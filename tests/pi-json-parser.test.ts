@@ -5,7 +5,10 @@ import { PiJsonStreamParser, aggregatePiTurn } from "../src/runtime/pi-actor/str
 
 describe("Pi JSON event compatibility", () => {
   it("parses the pinned event union and uses message_end as the result source", async () => {
-    const source = await readFile(new URL("./fixtures/pi-json-events.ndjson", import.meta.url), "utf8");
+    const source = await readFile(
+      new URL("./fixtures/pi-json-events.ndjson", import.meta.url),
+      "utf8",
+    );
     const events = source.trim().split("\n").map(parsePiJsonLine);
     const result = aggregatePiTurn(events);
 
@@ -34,8 +37,20 @@ describe("Pi JSON event compatibility", () => {
 
   it("keeps update deltas as progress and does not let them replace the final message", () => {
     const result = aggregatePiTurn([
-      { type: "message_update", messageId: "m", assistantMessageEvent: { type: "text_delta", delta: "wrong" } },
-      { type: "message_end", messageId: "m", message: { role: "assistant", content: [{ type: "text", text: "authoritative" }], stopReason: "stop" } },
+      {
+        type: "message_update",
+        messageId: "m",
+        assistantMessageEvent: { type: "text_delta", delta: "wrong" },
+      },
+      {
+        type: "message_end",
+        messageId: "m",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "authoritative" }],
+          stopReason: "stop",
+        },
+      },
     ]);
     expect(result.text).toBe("authoritative");
     expect(result.progressText).toBe("wrong");

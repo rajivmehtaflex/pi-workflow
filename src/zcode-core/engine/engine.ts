@@ -1,3 +1,4 @@
+/* oxlint-disable max-lines -- the engine is the single settlement boundary. */
 import { createHash } from "node:crypto";
 import { WorkflowError, toWorkflowErrorJson } from "./errors.js";
 import type {
@@ -10,11 +11,15 @@ import type {
   ArtifactVersionRecord,
   Caps,
   InstanceRef,
+  ImportedActorStatePort,
+  ImportedRuntimeCachePort,
   JournalStorePort,
   NodeRecord,
   PersonaSpec,
   RunEvent,
   RunStatus,
+  Violation,
+  WorkflowValueSchema,
   WorkflowDriver,
   WorkflowHostApi,
   WorldReadOp,
@@ -22,6 +27,14 @@ import type {
 
 interface PendingAsk {
   instance: InstanceRef;
+  actor: ActorId;
+  record: ActorRecord;
+  actorRef: ActorRef;
+  actorSeq: number;
+  instructions: string;
+  typed: boolean;
+  schema?: WorkflowValueSchema;
+  attempts: number;
   resolve(value: unknown): void;
   reject(error: unknown): void;
 }
@@ -31,10 +44,64 @@ export interface WorkflowEngineOptions {
   caps: Caps;
   journal: JournalStorePort;
   driver: WorkflowDriver;
+  askSpecs?: ReadonlyMap<string, { typed?: boolean; schema?: WorkflowValueSchema }>;
+  importedCache?: ImportedRuntimeCachePort;
+  maxRepairs?: number;
   maxReports?: number;
 }
 
-const hashInput = (value: unknown): string => createHash("sha256").update(JSON.stringify(value)).digest("hex");
+const hashInput = (value: unknown): string =>
+  createHash("sha256").update(JSON.stringify(value)).digest("hex");
+
+function valueType(value: unknown): string {
+  if (value === null) return "null";
+  if (Array.isArray(value)) return "array";
+  return typeof value;
+}
+
+function schemaLabel(schema: WorkflowValueSchema): string {
+  if (schema.type === "literal") return JSON.stringify(schema.value);
+  if (schema.type === "union") return schema.variants.map(schemaLabel).join(" | ");
+  return schema.type;
+}
+
+function validateSchema(schema: WorkflowValueSchema, value: unknown, path = "$"): Violation[] {
+  if (schema.type === "union") {
+    if (schema.variants.some((variant) => validateSchema(variant, value, path).length === 0))
+      return [];
+    return [{ path, expected: schemaLabel(schema), actual: valueType(value) }];
+  }
+  if (schema.type === "literal")
+    return Object.is(schema.value, value)
+      ? []
+      : [{ path, expected: schemaLabel(schema), actual: valueType(value) }];
+  if (schema.type === "null")
+    return value === null ? [] : [{ path, expected: "null", actual: valueType(value) }];
+  if (schema.type === "string" || schema.type === "boolean")
+    return typeof value === schema.type
+      ? []
+      : [{ path, expected: schema.type, actual: valueType(value) }];
+  if (schema.type === "number")
+    return typeof value === "number" && Number.isFinite(value)
+      ? []
+      : [{ path, expected: "number", actual: valueType(value) }];
+  if (schema.type === "array") {
+    if (!Array.isArray(value)) return [{ path, expected: "array", actual: valueType(value) }];
+    return value.flatMap((item, index) => validateSchema(schema.items, item, `${path}[${index}]`));
+  }
+  if (schema.type !== "object")
+    return [{ path, expected: schemaLabel(schema), actual: valueType(value) }];
+  if (typeof value !== "object" || value === null || Array.isArray(value))
+    return [{ path, expected: "object", actual: valueType(value) }];
+  const object = value as Record<string, unknown>;
+  return Object.entries(schema.properties).flatMap(([name, property]) => {
+    if (!(name in object))
+      return property.optional
+        ? []
+        : [{ path: `${path}.${name}`, expected: schemaLabel(property.schema) }];
+    return validateSchema(property.schema, object[name], `${path}.${name}`);
+  });
+}
 
 export class WorkflowEngine implements WorkflowHostApi {
   private readonly actors = new Map<ActorId, ActorRecord>();
@@ -49,25 +116,41 @@ export class WorkflowEngine implements WorkflowHostApi {
   private readonly artifacts = new Map<string, ArtifactVersionRecord>();
   private readonly phaseOrdinals = new Map<string, number>();
   private readonly maxReports: number;
+  private readonly importedActors = new Map<ActorId, ImportedActorStatePort>();
+  private readonly importedWorld?: ImportedRuntimeCachePort["world"];
   private reportCount = 0;
   private settled = false;
   private currentPhase: string | undefined;
 
   constructor(private readonly options: WorkflowEngineOptions) {
     this.maxReports = options.maxReports ?? 256;
+    this.importedWorld = options.importedCache?.world;
     for (const actor of options.journal.listActors(options.runId)) {
       const id = `${actor.siteId}@${actor.ordinal}`;
       this.actors.set(id, actor);
-      this.actorOrdinals.set(actor.siteId, Math.max(this.actorOrdinals.get(actor.siteId) ?? 0, actor.ordinal));
+      this.actorOrdinals.set(
+        actor.siteId,
+        Math.max(this.actorOrdinals.get(actor.siteId) ?? 0, actor.ordinal),
+      );
       this.actorSequences.set(id, Math.max(this.actorSequences.get(id) ?? 0, 0));
     }
     for (const node of options.journal.listNodes(options.runId)) {
       const key = this.key({ siteId: node.siteId, ordinal: node.ordinal });
-      this.nodeOrdinals.set(node.siteId, Math.max(this.nodeOrdinals.get(node.siteId) ?? 0, node.ordinal));
+      this.nodeOrdinals.set(
+        node.siteId,
+        Math.max(this.nodeOrdinals.get(node.siteId) ?? 0, node.ordinal),
+      );
       if (node.status === "completed") this.cachedNodes.set(key, node);
-      if (node.actorSiteId !== undefined && node.actorOrdinal !== undefined && node.actorSeq !== undefined) {
+      if (
+        node.actorSiteId !== undefined &&
+        node.actorOrdinal !== undefined &&
+        node.actorSeq !== undefined
+      ) {
         const actorId = `${node.actorSiteId}@${node.actorOrdinal}`;
-        this.actorSequences.set(actorId, Math.max(this.actorSequences.get(actorId) ?? 0, node.actorSeq));
+        this.actorSequences.set(
+          actorId,
+          Math.max(this.actorSequences.get(actorId) ?? 0, node.actorSeq),
+        );
       }
     }
   }
@@ -108,30 +191,54 @@ export class WorkflowEngine implements WorkflowHostApi {
       siteId,
       ordinal,
       ...(normalizedName === undefined ? {} : { name: normalizedName }),
-      ...(persona === undefined ? {} : { persona: typeof persona === "string" ? { system: persona } : persona }),
+      ...(persona === undefined
+        ? {}
+        : { persona: typeof persona === "string" ? { system: persona } : persona }),
       createdAt: Date.now(),
     };
     const id = `${siteId}@${ordinal}`;
     const existing = this.actors.get(id);
     if (existing !== undefined) {
-      if (normalizedName !== undefined && existing.name !== undefined && normalizedName !== existing.name) {
-        throw new WorkflowError("DuplicateActorName", `Actor ${siteId} changed its name during resume`);
+      if (
+        normalizedName !== undefined &&
+        existing.name !== undefined &&
+        normalizedName !== existing.name
+      ) {
+        throw new WorkflowError(
+          "DuplicateActorName",
+          `Actor ${siteId} changed its name during resume`,
+        );
       }
       return id;
     }
-    if (normalizedName !== undefined && [...this.actors.values()].some((actor) => actor.name === normalizedName)) {
+    if (
+      normalizedName !== undefined &&
+      [...this.actors.values()].some((actor) => actor.name === normalizedName)
+    ) {
       throw new WorkflowError("DuplicateActorName", `Duplicate actor name: ${normalizedName}`);
     }
     this.actors.set(id, actor);
     this.actorSequences.set(id, 0);
     this.options.journal.putActor(actor);
-    this.emit({ type: "actor-created", actor: { siteId, ordinal }, ...(actor.name ? { name: actor.name } : {}), ...(actor.persona ? { persona: actor.persona } : {}) });
+    const imported =
+      normalizedName === undefined
+        ? undefined
+        : this.options.importedCache?.actors.get(normalizedName);
+    if (imported !== undefined && imported.matches(actor.persona ?? {}))
+      this.importedActors.set(id, imported);
+    this.emit({
+      type: "actor-created",
+      actor: { siteId, ordinal },
+      ...(actor.name ? { name: actor.name } : {}),
+      ...(actor.persona ? { persona: actor.persona } : {}),
+    });
     return id;
   }
 
   async ask(siteId: string, actor: ActorId, instructions: string): Promise<unknown> {
     const actorRecord = this.actors.get(actor);
-    if (actorRecord === undefined) throw new WorkflowError("UnknownActor", `Unknown actor: ${actor}`);
+    if (actorRecord === undefined)
+      throw new WorkflowError("UnknownActor", `Unknown actor: ${actor}`);
     const instance = this.nextNode(siteId);
     const actorRef: ActorRef = { siteId: actorRecord.siteId, ordinal: actorRecord.ordinal };
     const actorSeq = (this.actorSequenceCursors.get(actor) ?? 0) + 1;
@@ -156,9 +263,47 @@ export class WorkflowEngine implements WorkflowHostApi {
       this.emit({ type: "node-settled", instance, outcome: "ok", cached: true });
       return cached.result;
     }
+    const imported = this.importedActors.get(actor);
+    const importedEntry = imported?.take(actorSeq, node.inputHash);
+    if (importedEntry !== undefined) {
+      this.recordNode({
+        ...node,
+        status: "completed",
+        result: importedEntry.result,
+        ...(importedEntry.messageBoundary === undefined
+          ? {}
+          : { messageBoundary: importedEntry.messageBoundary }),
+        updatedAt: Date.now(),
+      });
+      this.emit({ type: "node-settled", instance, outcome: "ok", cached: true });
+      return importedEntry.result;
+    }
     this.recordNode(node);
-    const result = new Promise<unknown>((resolve, reject) => this.pending.set(this.key(instance), { instance, resolve, reject }));
-    void this.startAsk(actor, actorRecord, instance, instructions, actorRef, actorSeq);
+    const result = new Promise<unknown>((resolve, reject) =>
+      this.pending.set(this.key(instance), {
+        instance,
+        actor,
+        record: actorRecord,
+        actorRef,
+        actorSeq,
+        instructions,
+        typed: this.options.askSpecs?.get(siteId)?.typed === true,
+        schema: this.options.askSpecs?.get(siteId)?.schema,
+        attempts: 0,
+        resolve,
+        reject,
+      }),
+    );
+    void this.startAsk(
+      actor,
+      actorRecord,
+      instance,
+      instructions,
+      actorRef,
+      actorSeq,
+      this.options.askSpecs?.get(siteId)?.typed === true,
+      this.options.askSpecs?.get(siteId)?.schema,
+    );
     return result;
   }
 
@@ -169,21 +314,32 @@ export class WorkflowEngine implements WorkflowHostApi {
     instructions: string,
     actorRef: ActorRef,
     actorSeq: number,
+    typed: boolean,
+    schema?: WorkflowValueSchema,
   ): Promise<void> {
     try {
       const session = await this.options.driver.createActorSession(
         actorRef,
         record.persona ?? {},
-        record.sessionId === undefined
-          ? undefined
-          : { sourceSessionId: record.sessionId, messageCount: record.sessionMessageCount ?? 0, resolvedModel: record.resolvedModel },
+        this.importedActors.get(actor)?.seed() ??
+          (record.sessionId === undefined
+            ? undefined
+            : {
+                sourceSessionId: record.sessionId,
+                messageCount: record.sessionMessageCount ?? 0,
+                resolvedModel: record.resolvedModel,
+              }),
       );
       if (record.sessionId !== session.id) {
         record.sessionId = session.id;
         this.replaceActor(record);
       }
       this.emit({ type: "node-dispatched", instance });
-      this.options.driver.startAsk(session, instance, { instructions, typed: false });
+      this.options.driver.startAsk(session, instance, {
+        instructions,
+        typed,
+        ...(schema === undefined ? {} : { schema }),
+      });
       void actor;
       void actorSeq;
     } catch (error) {
@@ -191,12 +347,32 @@ export class WorkflowEngine implements WorkflowHostApi {
     }
   }
 
-  resolveAsk(instance: InstanceRef, value: unknown, stats?: { totalTokens?: number; messageBoundary?: number }): void {
+  resolveAsk(
+    instance: InstanceRef,
+    value: unknown,
+    stats?: { totalTokens?: number; messageBoundary?: number },
+  ): void {
     const pending = this.pending.get(this.key(instance));
     if (pending === undefined) return;
+    if (pending.typed && pending.schema !== undefined) {
+      const violations = validateSchema(pending.schema, value);
+      if (violations.length > 0) {
+        this.rejectAsk(
+          instance,
+          new WorkflowError("ValidationFailed", "Typed actor result failed schema validation", {
+            violations,
+          }),
+        );
+        return;
+      }
+    }
     this.pending.delete(this.key(instance));
     this.replaceNode({
-      ...(this.options.journal.getNode(this.options.runId, instance.siteId, instance.ordinal) as NodeRecord),
+      ...(this.options.journal.getNode(
+        this.options.runId,
+        instance.siteId,
+        instance.ordinal,
+      ) as NodeRecord),
       status: "completed",
       result: value,
       ...(stats?.messageBoundary === undefined ? {} : { messageBoundary: stats.messageBoundary }),
@@ -210,10 +386,37 @@ export class WorkflowEngine implements WorkflowHostApi {
   rejectAsk(instance: InstanceRef, error: unknown): void {
     const pending = this.pending.get(this.key(instance));
     if (pending === undefined) return;
-    this.pending.delete(this.key(instance));
     const failure = toWorkflowErrorJson(error);
-    const existing = this.options.journal.getNode(this.options.runId, instance.siteId, instance.ordinal);
-    if (existing !== undefined) this.replaceNode({ ...existing, status: "failed", error: failure, updatedAt: Date.now() });
+    const maxRepairs = Math.max(0, Math.min(2, this.options.maxRepairs ?? 1));
+    if (pending.typed && failure.code === "ValidationFailed" && pending.attempts < maxRepairs) {
+      pending.attempts += 1;
+      this.emit({
+        type: "node-repairing",
+        instance,
+        attempt: pending.attempts,
+        violations: failure.violations ?? [],
+      });
+      const repairInstructions = `${pending.instructions}\n\nReturn only a corrected JSON result. Previous validation issues: ${failure.message}`;
+      void this.startAsk(
+        pending.actor,
+        pending.record,
+        pending.instance,
+        repairInstructions,
+        pending.actorRef,
+        pending.actorSeq,
+        pending.typed,
+        pending.schema,
+      );
+      return;
+    }
+    this.pending.delete(this.key(instance));
+    const existing = this.options.journal.getNode(
+      this.options.runId,
+      instance.siteId,
+      instance.ordinal,
+    );
+    if (existing !== undefined)
+      this.replaceNode({ ...existing, status: "failed", error: failure, updatedAt: Date.now() });
     this.emit({ type: "node-settled", instance, outcome: "failed", error: failure });
     pending.reject(error);
   }
@@ -222,39 +425,89 @@ export class WorkflowEngine implements WorkflowHostApi {
     const instance = this.nextNode(siteId);
     const inputHash = hashInput({ op, args });
     const nodeKind = op === "world.run" ? "world-run" : "world-read";
-    this.emit({ type: "node-queued", instance, kind: op === "world.run" ? "world-run" : "world-read" });
+    this.emit({
+      type: "node-queued",
+      instance,
+      kind: op === "world.run" ? "world-run" : "world-read",
+    });
     const cached = this.cachedNodes.get(this.key(instance));
     if (cached !== undefined && cached.inputHash === inputHash) {
       this.emit({ type: "node-settled", instance, outcome: "ok", cached: true });
       return cached.result;
     }
-    this.recordNode({ runId: this.options.runId, siteId, ordinal: instance.ordinal, kind: nodeKind, inputHash, input: { op, args }, status: "running", createdAt: Date.now() });
+    const imported = this.importedWorld?.take(inputHash, nodeKind);
+    if (imported !== undefined) {
+      this.recordNode({
+        runId: this.options.runId,
+        siteId,
+        ordinal: instance.ordinal,
+        kind: nodeKind,
+        inputHash,
+        input: { op, args },
+        status: "completed",
+        result: imported.result,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      });
+      this.emit({ type: "node-settled", instance, outcome: "ok", cached: true });
+      return imported.result;
+    }
+    this.recordNode({
+      runId: this.options.runId,
+      siteId,
+      ordinal: instance.ordinal,
+      kind: nodeKind,
+      inputHash,
+      input: { op, args },
+      status: "running",
+      createdAt: Date.now(),
+    });
     try {
       const value = await this.options.driver.executeWorldRead(op, args);
       const existing = this.options.journal.getNode(this.options.runId, siteId, instance.ordinal);
-      if (existing !== undefined) this.replaceNode({ ...existing, status: "completed", result: value, updatedAt: Date.now() });
+      if (existing !== undefined)
+        this.replaceNode({
+          ...existing,
+          status: "completed",
+          result: value,
+          updatedAt: Date.now(),
+        });
       this.emit({ type: "node-settled", instance, outcome: "ok" });
       return value;
     } catch (error) {
       const failure = toWorkflowErrorJson(error);
       const existing = this.options.journal.getNode(this.options.runId, siteId, instance.ordinal);
-      if (existing !== undefined) this.replaceNode({ ...existing, status: "failed", error: failure, updatedAt: Date.now() });
+      if (existing !== undefined)
+        this.replaceNode({ ...existing, status: "failed", error: failure, updatedAt: Date.now() });
       this.emit({ type: "node-settled", instance, outcome: "failed", error: failure });
       throw error;
     }
   }
 
   report(siteId: string, item: unknown, artifactId?: string): void {
-    if (++this.reportCount > this.maxReports) throw new WorkflowError("ReportCapExceeded", "Report count exceeded");
+    if (++this.reportCount > this.maxReports)
+      throw new WorkflowError("ReportCapExceeded", "Report count exceeded");
     let encoded: string;
     try {
       encoded = JSON.stringify(item);
     } catch {
       throw new WorkflowError("ReportCapExceeded", "Report item is not JSON serializable");
     }
-    if (Buffer.byteLength(encoded, "utf8") > 32 * 1024) throw new WorkflowError("ReportCapExceeded", "Report item is too large");
+    if (Buffer.byteLength(encoded, "utf8") > 32 * 1024)
+      throw new WorkflowError("ReportCapExceeded", "Report item is too large");
     const instance = this.nextNode(siteId);
-    this.recordNode({ runId: this.options.runId, siteId, ordinal: instance.ordinal, kind: "report", inputHash: hashInput(item), status: "completed", result: item, artifactId, createdAt: Date.now(), updatedAt: Date.now() });
+    this.recordNode({
+      runId: this.options.runId,
+      siteId,
+      ordinal: instance.ordinal,
+      kind: "report",
+      inputHash: hashInput(item),
+      status: "completed",
+      result: item,
+      artifactId,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    });
     this.emit({ type: "report", instance, item, ...(artifactId ? { artifactId } : {}) });
   }
 
@@ -266,14 +519,38 @@ export class WorkflowEngine implements WorkflowHostApi {
     this.emit({ type: "phase-entered", name: normalized, ordinal });
   }
 
-  async publishArtifact(siteId: string, op: ArtifactContentOp, args: unknown[]): Promise<ArtifactRef> {
-    if (this.options.driver.executeArtifactPublish === undefined) throw new WorkflowError("ArtifactStoreUnavailable", "Artifact store is unavailable");
+  async publishArtifact(
+    siteId: string,
+    op: ArtifactContentOp,
+    args: unknown[],
+  ): Promise<ArtifactRef> {
+    if (this.options.driver.executeArtifactPublish === undefined)
+      throw new WorkflowError("ArtifactStoreUnavailable", "Artifact store is unavailable");
     const instance = this.nextNode(siteId);
-    const artifact = await this.options.driver.executeArtifactPublish({ runId: this.options.runId, siteId, ordinal: instance.ordinal, op, args });
-    this.artifacts.set(artifact.id, artifact);
-    this.recordNode({ runId: this.options.runId, siteId, ordinal: instance.ordinal, kind: "artifact", inputHash: hashInput({ op, args }), status: "completed", result: artifact, artifactId: artifact.id, createdAt: Date.now(), updatedAt: Date.now() });
-    this.emit({ type: "artifact-published", instance, artifact });
-    return { id: artifact.id, version: artifact.version };
+    const artifact = await this.options.driver.executeArtifactPublish({
+      runId: this.options.runId,
+      siteId,
+      ordinal: instance.ordinal,
+      op,
+      args,
+    });
+    const stored =
+      this.options.journal.insertArtifactVersion?.(this.options.runId, artifact) ?? artifact;
+    this.artifacts.set(stored.id, stored);
+    this.recordNode({
+      runId: this.options.runId,
+      siteId,
+      ordinal: instance.ordinal,
+      kind: "artifact",
+      inputHash: hashInput({ op, args }),
+      status: "completed",
+      result: stored,
+      artifactId: stored.id,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    });
+    this.emit({ type: "artifact-published", instance, artifact: stored });
+    return { id: stored.id, version: stored.version };
   }
 
   declareArtifact(siteId: string, op: ArtifactPresetOp, args: unknown[]): void {
@@ -281,11 +558,28 @@ export class WorkflowEngine implements WorkflowHostApi {
     if (id === undefined) throw new WorkflowError("ArtifactSpecInvalid", "Artifact id is required");
     const previous = this.artifacts.get(id);
     const artifact: ArtifactVersionRecord = { id, version: 1, kind: op, spec: args[1] };
-    if (previous !== undefined && JSON.stringify(previous.spec) !== JSON.stringify(artifact.spec)) throw new WorkflowError("ArtifactRedeclared", `Artifact ${id} was redeclared with a different spec`);
-    this.artifacts.set(id, artifact);
+    if (previous !== undefined && JSON.stringify(previous.spec) !== JSON.stringify(artifact.spec))
+      throw new WorkflowError(
+        "ArtifactRedeclared",
+        `Artifact ${id} was redeclared with a different spec`,
+      );
+    const stored =
+      this.options.journal.insertArtifactVersion?.(this.options.runId, artifact) ?? artifact;
+    this.artifacts.set(id, stored);
     const instance = this.nextNode(siteId);
-    this.recordNode({ runId: this.options.runId, siteId, ordinal: instance.ordinal, kind: "artifact", inputHash: hashInput({ op, args }), status: "completed", result: artifact, artifactId: id, createdAt: Date.now(), updatedAt: Date.now() });
-    this.emit({ type: "artifact-published", instance, artifact });
+    this.recordNode({
+      runId: this.options.runId,
+      siteId,
+      ordinal: instance.ordinal,
+      kind: "artifact",
+      inputHash: hashInput({ op, args }),
+      status: "completed",
+      result: stored,
+      artifactId: id,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    });
+    this.emit({ type: "artifact-published", instance, artifact: stored });
   }
 
   log(message: string): void {
@@ -305,16 +599,38 @@ export class WorkflowEngine implements WorkflowHostApi {
     this.settle("errored", { failure: toWorkflowErrorJson(error) });
   }
 
-  stop(reason: "user" | "model" | "provider" | "interrupted" | "superseded", error?: unknown, supersededBy?: string): void {
-    this.settle("stopped", { stopReason: reason, ...(error ? { failure: toWorkflowErrorJson(error) } : {}), ...(supersededBy ? { supersededBy } : {}) });
+  stop(
+    reason: "user" | "model" | "provider" | "interrupted" | "superseded",
+    error?: unknown,
+    supersededBy?: string,
+  ): void {
+    this.settle("stopped", {
+      stopReason: reason,
+      ...(error ? { failure: toWorkflowErrorJson(error) } : {}),
+      ...(supersededBy ? { supersededBy } : {}),
+    });
     for (const pending of this.pending.values()) this.options.driver.cancelAsk(pending.instance);
   }
 
-  private settle(status: RunStatus, settlement: { result?: unknown; failure?: ReturnType<typeof toWorkflowErrorJson>; stopReason?: "user" | "model" | "provider" | "interrupted" | "superseded"; supersededBy?: string }): void {
+  private settle(
+    status: RunStatus,
+    settlement: {
+      result?: unknown;
+      failure?: ReturnType<typeof toWorkflowErrorJson>;
+      stopReason?: "user" | "model" | "provider" | "interrupted" | "superseded";
+      supersededBy?: string;
+    },
+  ): void {
     if (this.settled) return;
     this.settled = true;
     this.options.journal.updateRunStatus(this.options.runId, status, settlement);
-    this.emit({ type: "run-settled", status, ...(settlement.stopReason ? { stopReason: settlement.stopReason } : {}), ...(settlement.supersededBy ? { supersededBy: settlement.supersededBy } : {}), ...(settlement.failure ? { error: settlement.failure } : {}) });
+    this.emit({
+      type: "run-settled",
+      status,
+      ...(settlement.stopReason ? { stopReason: settlement.stopReason } : {}),
+      ...(settlement.supersededBy ? { supersededBy: settlement.supersededBy } : {}),
+      ...(settlement.failure ? { error: settlement.failure } : {}),
+    });
     this.options.driver.dispose?.();
   }
 

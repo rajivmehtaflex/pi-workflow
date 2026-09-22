@@ -86,7 +86,10 @@ export type PiJsonEvent =
   | PiAgentEndEvent;
 
 export class PiJsonProtocolError extends Error {
-  constructor(message: string, readonly code = "PiJsonProtocolError") {
+  constructor(
+    message: string,
+    readonly code = "PiJsonProtocolError",
+  ) {
     super(message);
     this.name = "PiJsonProtocolError";
   }
@@ -108,7 +111,8 @@ function requiredString(input: Record<string, unknown>, key: string): string {
 
 function optionalString(input: Record<string, unknown>, key: string): string | undefined {
   if (input[key] === undefined) return undefined;
-  if (typeof input[key] !== "string") throw new PiJsonProtocolError(`Pi event field ${key} must be a string`);
+  if (typeof input[key] !== "string")
+    throw new PiJsonProtocolError(`Pi event field ${key} must be a string`);
   return input[key] as string;
 }
 
@@ -124,10 +128,18 @@ function usage(value: unknown): PiUsage | undefined {
   if (value === undefined) return undefined;
   const input = asRecord(value, "usage");
   return {
-    ...(optionalFiniteNumber(input, "inputTokens") === undefined ? {} : { inputTokens: optionalFiniteNumber(input, "inputTokens") }),
-    ...(optionalFiniteNumber(input, "outputTokens") === undefined ? {} : { outputTokens: optionalFiniteNumber(input, "outputTokens") }),
-    ...(optionalFiniteNumber(input, "totalTokens") === undefined ? {} : { totalTokens: optionalFiniteNumber(input, "totalTokens") }),
-    ...(optionalFiniteNumber(input, "cost") === undefined ? {} : { cost: optionalFiniteNumber(input, "cost") }),
+    ...(optionalFiniteNumber(input, "inputTokens") === undefined
+      ? {}
+      : { inputTokens: optionalFiniteNumber(input, "inputTokens") }),
+    ...(optionalFiniteNumber(input, "outputTokens") === undefined
+      ? {}
+      : { outputTokens: optionalFiniteNumber(input, "outputTokens") }),
+    ...(optionalFiniteNumber(input, "totalTokens") === undefined
+      ? {}
+      : { totalTokens: optionalFiniteNumber(input, "totalTokens") }),
+    ...(optionalFiniteNumber(input, "cost") === undefined
+      ? {}
+      : { cost: optionalFiniteNumber(input, "cost") }),
   };
 }
 
@@ -136,7 +148,9 @@ function model(value: unknown): PiAgentStartEvent["model"] {
   if (typeof value === "string") return value;
   const input = asRecord(value, "model");
   return {
-    ...(optionalString(input, "provider") === undefined ? {} : { provider: optionalString(input, "provider") }),
+    ...(optionalString(input, "provider") === undefined
+      ? {}
+      : { provider: optionalString(input, "provider") }),
     ...(optionalString(input, "id") === undefined ? {} : { id: optionalString(input, "id") }),
   };
 }
@@ -159,72 +173,115 @@ export function parsePiJsonLine(line: string): PiJsonEvent {
         type,
         version: input.version,
         id: requiredString(input, "id"),
-        ...(optionalString(input, "cwd") === undefined ? {} : { cwd: optionalString(input, "cwd") }),
-        ...(optionalString(input, "sessionFile") === undefined ? {} : { sessionFile: optionalString(input, "sessionFile") }),
+        ...(optionalString(input, "cwd") === undefined
+          ? {}
+          : { cwd: optionalString(input, "cwd") }),
+        ...(optionalString(input, "sessionFile") === undefined
+          ? {}
+          : { sessionFile: optionalString(input, "sessionFile") }),
       };
     }
     case "agent_start": {
       return {
         type,
-        ...(optionalString(input, "agentId") === undefined ? {} : { agentId: optionalString(input, "agentId") }),
+        ...(optionalString(input, "agentId") === undefined
+          ? {}
+          : { agentId: optionalString(input, "agentId") }),
         ...(model(input.model) === undefined ? {} : { model: model(input.model) }),
       };
     }
     case "turn_start":
-      return { type, ...(optionalString(input, "turnId") === undefined ? {} : { turnId: optionalString(input, "turnId") }) };
+      return {
+        type,
+        ...(optionalString(input, "turnId") === undefined
+          ? {}
+          : { turnId: optionalString(input, "turnId") }),
+      };
     case "turn_end":
-      return { type, ...(optionalString(input, "turnId") === undefined ? {} : { turnId: optionalString(input, "turnId") }) };
+      return {
+        type,
+        ...(optionalString(input, "turnId") === undefined
+          ? {}
+          : { turnId: optionalString(input, "turnId") }),
+      };
     case "message_update": {
       const event = asRecord(input.assistantMessageEvent, "assistantMessageEvent");
       requiredString(event, "type");
       return {
         type,
-        ...(optionalString(input, "messageId") === undefined ? {} : { messageId: optionalString(input, "messageId") }),
+        ...(optionalString(input, "messageId") === undefined
+          ? {}
+          : { messageId: optionalString(input, "messageId") }),
         assistantMessageEvent: event,
       };
     }
     case "message_end": {
       const message = asRecord(input.message, "message");
-      if (message.role !== undefined && typeof message.role !== "string") throw new PiJsonProtocolError("Pi message role must be a string");
-      if (message.content !== undefined && typeof message.content !== "string" && !Array.isArray(message.content)) {
+      if (message.role !== undefined && typeof message.role !== "string")
+        throw new PiJsonProtocolError("Pi message role must be a string");
+      if (
+        message.content !== undefined &&
+        typeof message.content !== "string" &&
+        !Array.isArray(message.content)
+      ) {
         throw new PiJsonProtocolError("Pi message content must be a string or array");
       }
       return {
         type,
-        ...(optionalString(input, "messageId") === undefined ? {} : { messageId: optionalString(input, "messageId") }),
+        ...(optionalString(input, "messageId") === undefined
+          ? {}
+          : { messageId: optionalString(input, "messageId") }),
         message: {
-          ...(optionalString(message, "role") === undefined ? {} : { role: optionalString(message, "role") }),
+          ...(optionalString(message, "role") === undefined
+            ? {}
+            : { role: optionalString(message, "role") }),
           ...(message.content === undefined ? {} : { content: message.content }),
-          ...(optionalString(message, "stopReason") === undefined ? {} : { stopReason: optionalString(message, "stopReason") }),
-          ...(optionalString(message, "errorMessage") === undefined ? {} : { errorMessage: optionalString(message, "errorMessage") }),
+          ...(optionalString(message, "stopReason") === undefined
+            ? {}
+            : { stopReason: optionalString(message, "stopReason") }),
+          ...(optionalString(message, "errorMessage") === undefined
+            ? {}
+            : { errorMessage: optionalString(message, "errorMessage") }),
         },
       };
     }
     case "tool_execution_start":
       return {
         type,
-        ...(optionalString(input, "toolCallId") === undefined ? {} : { toolCallId: optionalString(input, "toolCallId") }),
-        ...(optionalString(input, "toolName") === undefined ? {} : { toolName: optionalString(input, "toolName") }),
+        ...(optionalString(input, "toolCallId") === undefined
+          ? {}
+          : { toolCallId: optionalString(input, "toolCallId") }),
+        ...(optionalString(input, "toolName") === undefined
+          ? {}
+          : { toolName: optionalString(input, "toolName") }),
         ...(input.args === undefined ? {} : { args: input.args }),
       };
     case "tool_execution_update":
       return {
         type,
-        ...(optionalString(input, "toolCallId") === undefined ? {} : { toolCallId: optionalString(input, "toolCallId") }),
+        ...(optionalString(input, "toolCallId") === undefined
+          ? {}
+          : { toolCallId: optionalString(input, "toolCallId") }),
         ...(input.update === undefined ? {} : { update: input.update }),
       };
     case "tool_execution_end":
       return {
         type,
-        ...(optionalString(input, "toolCallId") === undefined ? {} : { toolCallId: optionalString(input, "toolCallId") }),
+        ...(optionalString(input, "toolCallId") === undefined
+          ? {}
+          : { toolCallId: optionalString(input, "toolCallId") }),
         ...(input.isError === undefined ? {} : { isError: Boolean(input.isError) }),
         ...(input.result === undefined ? {} : { result: input.result }),
       };
     case "agent_end":
       return {
         type,
-        ...(optionalString(input, "reason") === undefined ? {} : { reason: optionalString(input, "reason") }),
-        ...(optionalString(input, "errorMessage") === undefined ? {} : { errorMessage: optionalString(input, "errorMessage") }),
+        ...(optionalString(input, "reason") === undefined
+          ? {}
+          : { reason: optionalString(input, "reason") }),
+        ...(optionalString(input, "errorMessage") === undefined
+          ? {}
+          : { errorMessage: optionalString(input, "errorMessage") }),
         ...(usage(input.usage) === undefined ? {} : { usage: usage(input.usage) }),
       };
     default:
@@ -236,7 +293,10 @@ export function assistantMessageText(message: PiMessageEndEvent["message"]): str
   if (typeof message.content === "string") return message.content;
   if (!Array.isArray(message.content)) return undefined;
   const text = message.content
-    .filter((part): part is Record<string, unknown> => typeof part === "object" && part !== null && !Array.isArray(part))
+    .filter(
+      (part): part is Record<string, unknown> =>
+        typeof part === "object" && part !== null && !Array.isArray(part),
+    )
     .filter((part) => part.type === "text" && typeof part.text === "string")
     .map((part) => part.text as string)
     .join("");

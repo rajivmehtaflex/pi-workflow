@@ -1,4 +1,5 @@
 import type { CompileDiagnostic } from "../compiler/compile.js";
+import type { WorkflowValueSchema } from "../engine/types.js";
 
 export type SiteKind = "ask" | "world-read" | "world-run" | "report" | "artifact";
 
@@ -11,6 +12,8 @@ export interface ActorProjection {
 export interface SiteProjection {
   siteId: string;
   kind: SiteKind;
+  typed?: boolean;
+  resultSchema?: WorkflowValueSchema;
   op?: string;
   actorSiteId?: string;
   actorName?: string;

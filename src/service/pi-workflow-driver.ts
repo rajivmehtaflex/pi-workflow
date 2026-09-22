@@ -1,5 +1,9 @@
 import { actorSessionPath } from "../runtime/pi-actor/session-path.js";
-import { spawnPiActorTurn, type ActorTurnSettlement, type SpawnPiActorTurnOptions } from "../runtime/pi-actor/process.js";
+import {
+  spawnPiActorTurn,
+  type ActorTurnSettlement,
+  type SpawnPiActorTurnOptions,
+} from "../runtime/pi-actor/process.js";
 import { WorkflowError } from "../zcode-core/engine/errors.js";
 import type {
   ActorRef,
@@ -13,6 +17,7 @@ import type {
   RunEvent,
   SessionRef,
   SubmitVerdict,
+  WorkflowErrorCode,
   WorldReadOp,
   WorkflowDriver,
 } from "../zcode-core/engine/types.js";
@@ -45,12 +50,18 @@ export interface PiWorkflowDriverOptions {
   runningScript?: string;
   fallbackExecutable?: string;
   actorExecutable?: string;
-  actorExecutableArgs?: string[] | ((context: { actor: ActorRef; instance: InstanceRef; prompt: string }) => string[]);
+  actorExecutableArgs?:
+    | string[]
+    | ((context: { actor: ActorRef; instance: InstanceRef; prompt: string }) => string[]);
   actorTimeoutMs?: number;
   spawnActorTurn?: (options: SpawnPiActorTurnOptions) => Promise<ActorTurnSettlement>;
   executeWorldRead?(op: WorldReadOp, args: unknown[]): Promise<unknown>;
   executeArtifactPublish?(request: ArtifactPublishRequest): Promise<ArtifactVersionRecord>;
-  onResolveAsk?(instance: InstanceRef, value: unknown, stats: { totalTokens?: number; messageBoundary?: number }): void;
+  onResolveAsk?(
+    instance: InstanceRef,
+    value: unknown,
+    stats: { totalTokens?: number; messageBoundary?: number },
+  ): void;
   onRejectAsk?(instance: InstanceRef, error: unknown): void;
   onEvent?(event: RunEvent): void;
 }
@@ -63,9 +74,18 @@ function actorSessionId(runId: string, actor: ActorRef): string {
   return `${runId}:${actor.siteId}@${actor.ordinal}`;
 }
 
-function settlementError(result: Extract<ActorTurnSettlement, { status: "errored" | "stopped" }>): WorkflowError {
-  const failure = result.error ?? { code: result.status === "stopped" ? "Interrupted" : "DriverError", message: "Pi actor did not complete" };
-  return new WorkflowError(result.status === "stopped" ? "Interrupted" : "DriverError", failure.message, {
+function settlementError(
+  result: Extract<ActorTurnSettlement, { status: "errored" | "stopped" }>,
+): WorkflowError {
+  const failure = result.error ?? {
+    code: result.status === "stopped" ? "Interrupted" : "DriverError",
+    message: "Pi actor did not complete",
+  };
+  const code =
+    result.status === "stopped"
+      ? "Interrupted"
+      : ((failure.code as WorkflowErrorCode | undefined) ?? "DriverError");
+  return new WorkflowError(code, failure.message, {
     ...(failure.finalText === undefined ? {} : { finalText: failure.finalText }),
     ...(failure.violations === undefined ? {} : { violations: failure.violations }),
   });
@@ -83,11 +103,20 @@ export class PiWorkflowDriver implements WorkflowDriver {
     this.maxConcurrency = Math.max(1, Math.floor(options.maxConcurrency));
   }
 
-  async createActorSession(actor: ActorRef, persona: PersonaSpec, seed?: ActorSessionSeed): Promise<SessionRef> {
+  async createActorSession(
+    actor: ActorRef,
+    persona: PersonaSpec,
+    seed?: ActorSessionSeed,
+  ): Promise<SessionRef> {
     const id = actorSessionId(this.options.runId, actor);
     const existing = this.sessions.get(id);
     if (existing !== undefined) return { id };
-    const path = actorSessionPath({ cwd: this.options.cwd, workspaceKey: this.options.workspaceKey, runId: this.options.runId, actor });
+    const path = actorSessionPath({
+      cwd: this.options.cwd,
+      workspaceKey: this.options.workspaceKey,
+      runId: this.options.runId,
+      actor,
+    });
     const state: ActorSessionState = {
       id,
       actor,
@@ -113,14 +142,25 @@ export class PiWorkflowDriver implements WorkflowDriver {
   startAsk(session: SessionRef, instance: InstanceRef, message: AskMessage): void {
     const state = this.sessions.get(session.id);
     if (state === undefined) {
-      this.options.onRejectAsk?.(instance, new WorkflowError("UnknownActor", `Unknown actor session: ${session.id}`));
+      this.options.onRejectAsk?.(
+        instance,
+        new WorkflowError("UnknownActor", `Unknown actor session: ${session.id}`),
+      );
       return;
     }
     if (this.closed) {
-      this.options.onRejectAsk?.(instance, new WorkflowError("Cancelled", "Workflow driver is stopped"));
+      this.options.onRejectAsk?.(
+        instance,
+        new WorkflowError("Cancelled", "Workflow driver is stopped"),
+      );
       return;
     }
-    const task: ActorTask = { session: state, instance, message, controller: new AbortController() };
+    const task: ActorTask = {
+      session: state,
+      instance,
+      message,
+      controller: new AbortController(),
+    };
     state.queue.push(task);
     this.pump();
   }
@@ -141,18 +181,25 @@ export class PiWorkflowDriver implements WorkflowDriver {
       const index = session.queue.findIndex((task) => taskKey(task.instance) === key);
       if (index < 0) continue;
       session.queue.splice(index, 1);
-      this.options.onRejectAsk?.(instance, new WorkflowError("Cancelled", "Pi actor ask was cancelled"));
+      this.options.onRejectAsk?.(
+        instance,
+        new WorkflowError("Cancelled", "Pi actor ask was cancelled"),
+      );
       return;
     }
   }
 
   async executeWorldRead(op: WorldReadOp, args: unknown[]): Promise<unknown> {
-    if (this.options.executeWorldRead === undefined) throw new WorkflowError("DriverError", `World operation is unavailable: ${op}`);
+    if (this.options.executeWorldRead === undefined)
+      throw new WorkflowError("DriverError", `World operation is unavailable: ${op}`);
     return this.options.executeWorldRead(op, args);
   }
 
   executeArtifactPublish(request: ArtifactPublishRequest): Promise<ArtifactVersionRecord> {
-    if (this.options.executeArtifactPublish === undefined) return Promise.reject(new WorkflowError("ArtifactStoreUnavailable", "Artifact store is unavailable"));
+    if (this.options.executeArtifactPublish === undefined)
+      return Promise.reject(
+        new WorkflowError("ArtifactStoreUnavailable", "Artifact store is unavailable"),
+      );
     return this.options.executeArtifactPublish(request);
   }
 
@@ -165,7 +212,11 @@ export class PiWorkflowDriver implements WorkflowDriver {
     this.closed = true;
     for (const task of this.active.values()) task.controller.abort();
     for (const session of this.sessions.values()) {
-      for (const task of session.queue) this.options.onRejectAsk?.(task.instance, new WorkflowError("Cancelled", "Pi actor driver disposed"));
+      for (const task of session.queue)
+        this.options.onRejectAsk?.(
+          task.instance,
+          new WorkflowError("Cancelled", "Pi actor driver disposed"),
+        );
       session.queue.length = 0;
     }
   }
@@ -173,7 +224,9 @@ export class PiWorkflowDriver implements WorkflowDriver {
   private pump(): void {
     if (this.closed) return;
     while (this.active.size < this.maxConcurrency) {
-      const session = [...this.sessions.values()].find((candidate) => candidate.active === undefined && candidate.queue.length > 0);
+      const session = [...this.sessions.values()].find(
+        (candidate) => candidate.active === undefined && candidate.queue.length > 0,
+      );
       if (session === undefined) return;
       const task = session.queue.shift()!;
       session.active = task;
@@ -187,9 +240,14 @@ export class PiWorkflowDriver implements WorkflowDriver {
   }
 
   private async runTask(task: ActorTask): Promise<void> {
-    const directArgs = typeof this.options.actorExecutableArgs === "function"
-      ? this.options.actorExecutableArgs({ actor: task.session.actor, instance: task.instance, prompt: task.message.instructions })
-      : this.options.actorExecutableArgs;
+    const directArgs =
+      typeof this.options.actorExecutableArgs === "function"
+        ? this.options.actorExecutableArgs({
+            actor: task.session.actor,
+            instance: task.instance,
+            prompt: task.message.instructions,
+          })
+        : this.options.actorExecutableArgs;
     const result = await (this.options.spawnActorTurn ?? spawnPiActorTurn)({
       cwd: this.options.cwd,
       sessionPath: task.session.path,
@@ -206,11 +264,23 @@ export class PiWorkflowDriver implements WorkflowDriver {
     });
     if (result.status === "completed") {
       task.session.messageCount += 1;
-      const stored = this.options.journal.getActor(this.options.runId, task.session.actor.siteId, task.session.actor.ordinal);
+      const stored = this.options.journal.getActor(
+        this.options.runId,
+        task.session.actor.siteId,
+        task.session.actor.ordinal,
+      );
       if (stored !== undefined && this.options.journal.updateActor !== undefined) {
-        this.options.journal.updateActor({ ...stored, sessionPath: task.session.path, resolvedModel: result.model ?? this.options.model, sessionMessageCount: task.session.messageCount });
+        this.options.journal.updateActor({
+          ...stored,
+          sessionPath: task.session.path,
+          resolvedModel: result.model ?? this.options.model,
+          sessionMessageCount: task.session.messageCount,
+        });
       }
-      this.options.onResolveAsk?.(task.instance, result.value ?? result.text, { totalTokens: result.usage?.totalTokens, messageBoundary: task.session.messageCount });
+      this.options.onResolveAsk?.(task.instance, result.value ?? result.text, {
+        totalTokens: result.usage?.totalTokens,
+        messageBoundary: task.session.messageCount,
+      });
       return;
     }
     this.options.onRejectAsk?.(task.instance, settlementError(result));

@@ -9,7 +9,9 @@ export interface OpenWorkflowDatabaseOptions {
   workspaceIdentity?: string;
 }
 
-export async function openWorkflowDatabase(options: OpenWorkflowDatabaseOptions): Promise<WorkflowDatabaseHandle> {
+export async function openWorkflowDatabase(
+  options: OpenWorkflowDatabaseOptions,
+): Promise<WorkflowDatabaseHandle> {
   const cwd = resolve(options.cwd);
   const dbPath = resolve(cwd, ".pi", "workflows.db");
   await mkdir(resolve(cwd, ".pi"), { recursive: true });

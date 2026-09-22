@@ -24,14 +24,17 @@ export class PiJsonStreamParser {
   }
 
   push(chunk: Uint8Array | string): PiJsonEvent[] {
-    this.buffer += this.decoder.write(typeof chunk === "string" ? Buffer.from(chunk) : Buffer.from(chunk));
+    this.buffer += this.decoder.write(
+      typeof chunk === "string" ? Buffer.from(chunk) : Buffer.from(chunk),
+    );
     return this.takeLines();
   }
 
   end(): PiJsonEvent[] {
     this.buffer += this.decoder.end();
     const events = this.takeLines();
-    if (this.buffer.trim() !== "") throw new PiJsonProtocolError("Pi child ended with a partial NDJSON line", "PartialLine");
+    if (this.buffer.trim() !== "")
+      throw new PiJsonProtocolError("Pi child ended with a partial NDJSON line", "PartialLine");
     return events;
   }
 
@@ -70,7 +73,8 @@ function modelName(value: unknown): string | undefined {
   if (typeof value === "string") return value;
   if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
   const model = value as { provider?: unknown; id?: unknown };
-  if (typeof model.provider === "string" && typeof model.id === "string") return `${model.provider}/${model.id}`;
+  if (typeof model.provider === "string" && typeof model.id === "string")
+    return `${model.provider}/${model.id}`;
   return typeof model.id === "string" ? model.id : undefined;
 }
 
@@ -107,13 +111,19 @@ export function aggregatePiTurn(events: readonly PiJsonEvent[]): PiTurnAggregate
       stopReason = event.reason ?? stopReason;
       errorMessage = event.errorMessage ?? errorMessage;
     }
-    if (event.type === "tool_execution_start" || event.type === "tool_execution_update" || event.type === "tool_execution_end") {
+    if (
+      event.type === "tool_execution_start" ||
+      event.type === "tool_execution_update" ||
+      event.type === "tool_execution_end"
+    ) {
       toolEvents.push(event);
     }
   }
 
   return {
-    ...(finalMessage === undefined ? {} : { finalMessage, text: assistantMessageText(finalMessage.message) }),
+    ...(finalMessage === undefined
+      ? {}
+      : { finalMessage, text: assistantMessageText(finalMessage.message) }),
     progressText,
     ...(stopReason === undefined ? {} : { stopReason }),
     ...(errorMessage === undefined ? {} : { errorMessage }),

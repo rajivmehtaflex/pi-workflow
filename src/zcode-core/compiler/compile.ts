@@ -91,7 +91,12 @@ export function collectDiagnostics(program: ts.Program): CompileDiagnostic[] {
         return { code: diagnostic.code, line: 1, column: 1, message };
       }
       const location = diagnostic.file.getLineAndCharacterOfPosition(diagnostic.start);
-      return { code: diagnostic.code, line: Math.max(1, location.line), column: location.character + 1, message };
+      return {
+        code: diagnostic.code,
+        line: Math.max(1, location.line),
+        column: location.character + 1,
+        message,
+      };
     },
   );
 }

@@ -6,7 +6,11 @@ import type { EscalationRecord } from "../storage/types.js";
 export interface EscalationPersistence {
   putEscalation(record: EscalationRecord): void;
   getEscalation(qid: string): EscalationRecord | undefined;
-  updateEscalation(qid: string, status: EscalationRecord["status"], answer?: string): EscalationRecord;
+  updateEscalation(
+    qid: string,
+    status: EscalationRecord["status"],
+    answer?: string,
+  ): EscalationRecord;
   listPendingEscalations(runId: string): EscalationRecord[];
 }
 
@@ -23,7 +27,9 @@ export interface EscalationRegistryOptions {
   journal: JournalStorePort;
   hasUI?: boolean;
   askInteractive?(question: EscalationQuestion, signal?: AbortSignal): Promise<string | undefined>;
-  headlessAnswer?: string | ((question: EscalationQuestion) => string | undefined | Promise<string | undefined>);
+  headlessAnswer?:
+    | string
+    | ((question: EscalationQuestion) => string | undefined | Promise<string | undefined>);
 }
 
 interface PendingQuestion {
@@ -47,17 +53,30 @@ export class EscalationRegistry {
     this.options.persistence.putEscalation({
       qid,
       runId: full.runId,
-      ...(full.instance === undefined ? {} : { actorSiteId: full.instance.siteId, actorOrdinal: full.instance.ordinal }),
+      ...(full.instance === undefined
+        ? {}
+        : { actorSiteId: full.instance.siteId, actorOrdinal: full.instance.ordinal }),
       question: full.question,
       ...(full.context === undefined ? {} : { context: full.context }),
       askedAt: Date.now(),
       status: "pending",
     });
-    emitEscalationEvent(this.options.journal, full.runId, { type: "escalation-requested", qid, question: full.question, ...(full.context === undefined ? {} : { context: full.context }), askedAt: Date.now() });
-    const promise = new Promise<string>((resolve, reject) => this.pending.set(qid, { question: full, resolve, reject }));
+    emitEscalationEvent(this.options.journal, full.runId, {
+      type: "escalation-requested",
+      qid,
+      question: full.question,
+      ...(full.context === undefined ? {} : { context: full.context }),
+      askedAt: Date.now(),
+    });
+    const promise = new Promise<string>((resolve, reject) =>
+      this.pending.set(qid, { question: full, resolve, reject }),
+    );
     if (signal !== undefined) {
       if (signal.aborted) this.cancel(qid, "Escalation was aborted");
-      else signal.addEventListener("abort", () => this.cancel(qid, "Escalation was aborted"), { once: true });
+      else
+        signal.addEventListener("abort", () => this.cancel(qid, "Escalation was aborted"), {
+          once: true,
+        });
     }
     void this.resolveFromConfiguredSource(full);
     return promise;
@@ -66,7 +85,8 @@ export class EscalationRegistry {
   resolve(qid: string, answer: string): void {
     const record = this.options.persistence.getEscalation(qid);
     const pending = this.pending.get(qid);
-    if (record === undefined || record.status !== "pending" || pending === undefined) throw new WorkflowError("DriverError", `Unknown or settled escalation: ${qid}`);
+    if (record === undefined || record.status !== "pending" || pending === undefined)
+      throw new WorkflowError("DriverError", `Unknown or settled escalation: ${qid}`);
     const run = this.options.journal.getRun(record.runId);
     if (run === undefined || ["completed", "errored", "stopped"].includes(run.status)) {
       this.cancel(qid, "The workflow run is already settled");
@@ -74,7 +94,11 @@ export class EscalationRegistry {
     }
     this.options.persistence.updateEscalation(qid, "resolved", answer);
     this.pending.delete(qid);
-    emitEscalationEvent(this.options.journal, record.runId, { type: "escalation-resolved", qid, answer });
+    emitEscalationEvent(this.options.journal, record.runId, {
+      type: "escalation-resolved",
+      qid,
+      answer,
+    });
     pending.resolve(answer);
   }
 
@@ -88,8 +112,10 @@ export class EscalationRegistry {
   }
 
   cancelRun(runId: string): void {
-    for (const [qid, pending] of this.pending) if (pending.question.runId === runId) this.cancel(qid);
-    for (const record of this.options.persistence.listPendingEscalations(runId)) this.options.persistence.updateEscalation(record.qid, "cancelled");
+    for (const [qid, pending] of this.pending)
+      if (pending.question.runId === runId) this.cancel(qid);
+    for (const record of this.options.persistence.listPendingEscalations(runId))
+      this.options.persistence.updateEscalation(record.qid, "cancelled");
   }
 
   pendingForRun(runId: string): EscalationRecord[] {
@@ -100,16 +126,26 @@ export class EscalationRegistry {
     try {
       let answer: string | undefined;
       if (this.options.headlessAnswer !== undefined) {
-        answer = typeof this.options.headlessAnswer === "function" ? await this.options.headlessAnswer(question) : this.options.headlessAnswer;
+        answer =
+          typeof this.options.headlessAnswer === "function"
+            ? await this.options.headlessAnswer(question)
+            : this.options.headlessAnswer;
       } else if (this.options.hasUI === true && this.options.askInteractive !== undefined) {
         answer = await this.options.askInteractive(question);
       } else {
-        throw new WorkflowError("NoUserInterface", "Workflow escalation requires an interactive UI or configured headless answer");
+        throw new WorkflowError(
+          "NoUserInterface",
+          "Workflow escalation requires an interactive UI or configured headless answer",
+        );
       }
-      if (answer === undefined) throw new WorkflowError("NoUserInterface", "Workflow escalation did not receive an answer");
+      if (answer === undefined)
+        throw new WorkflowError("NoUserInterface", "Workflow escalation did not receive an answer");
       this.resolve(question.qid, answer);
     } catch (error) {
-      this.cancel(question.qid, error instanceof Error ? error.message : "Workflow escalation failed");
+      this.cancel(
+        question.qid,
+        error instanceof Error ? error.message : "Workflow escalation failed",
+      );
     }
   }
 }

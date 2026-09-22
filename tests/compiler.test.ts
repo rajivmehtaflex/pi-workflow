@@ -23,6 +23,15 @@ describe("workflow compiler and analysis", () => {
     expect(result.ok).toBe(true);
     expect(result.graph?.actors.map((actor) => actor.name)).toEqual(["reviewer", "planner"]);
     expect(result.graph?.sites.filter((site) => site.kind === "ask")).toHaveLength(3);
+    expect(result.graph?.sites.find((site) => site.siteId === "ask#1")).toMatchObject({
+      typed: true,
+      resultSchema: {
+        type: "object",
+        properties: {
+          ok: { optional: false, schema: { type: "boolean" } },
+        },
+      },
+    });
     expect(result.graph?.sites.some((site) => site.kind === "world-read")).toBe(true);
     expect(result.graph?.sites.some((site) => site.kind === "report")).toBe(true);
     expect(result.declaredArtifacts.map((artifact) => artifact.id)).toEqual(["report", "scores"]);
@@ -62,5 +71,20 @@ describe("workflow compiler and analysis", () => {
     const result = analyzeWorkflowScript(source);
     expect(result.ok).toBe(false);
     expect(result.diagnostics.length).toBeGreaterThan(0);
+  });
+
+  it("rejects typed result declarations that cannot become runtime schemas", () => {
+    const result = analyzeWorkflowScript(`
+      type Answer = () => string;
+      const reviewer = agent("reviewer");
+      await reviewer.ask<Answer>("first");
+    `);
+
+    expect(result.ok).toBe(false);
+    expect(result.diagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ message: expect.stringContaining("runtime schema") }),
+      ]),
+    );
   });
 });

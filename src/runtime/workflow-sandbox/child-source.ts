@@ -12,7 +12,7 @@ const pending = new Map();
 let requestOrdinal = 0;
 let actorOrdinal = 0;
 const send = (message) => process.stdout.write(JSON.stringify(message) + "\\n");
-const readError = (error) => ({ code: typeof error?.code === "string" ? error.code : "DriverError", message: error instanceof Error ? error.message : String(error) });
+const readError = (error) => ({ code: typeof error?.code === "string" ? error.code : "DriverError", message: error instanceof Error ? error.message : String(error), ...(error?.details === undefined ? {} : { details: error.details }) });
 const request = (type, siteId, payload = {}) => {
   const id = "request-" + (++requestOrdinal);
   return new Promise((resolve, reject) => {
@@ -46,6 +46,7 @@ input.on("line", (line) => {
   else {
     const error = new Error(message.error?.message ?? "Boundary-A request failed");
     error.code = message.error?.code ?? "DriverError";
+    if (message.error?.details !== undefined) error.details = message.error.details;
     waiter.reject(error);
   }
 });
