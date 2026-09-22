@@ -164,4 +164,46 @@ describe("automatic requirements surface", () => {
     expect(JSON.stringify(send.mock.calls[0]?.[0]).length).toBeLessThan(10_000);
     notifications.dispose();
   });
+
+  it("does not apply a five-minute cutoff and does not redeliver after restart", async () => {
+    vi.useFakeTimers();
+    try {
+      const current = request({ state: "running", runId: "run-long" });
+      const run = { runId: "run-long", status: "running" } as never;
+      const transition = vi.fn(
+        (_id: string, expectedState: string, patch: Partial<RequirementsRequest>) => {
+          expect(current.state).toBe(expectedState);
+          Object.assign(current, patch, { updatedAt: current.updatedAt + 1 });
+          return current;
+        },
+      );
+      const send = vi.fn();
+      const options = {
+        workspaceKey: "workspace-1",
+        repository: { list: () => [current], transition } as never,
+        getRun: () => run,
+        send,
+      };
+      const notifications = new RequirementsNotifications(options);
+
+      await notifications.poll();
+      vi.advanceTimersByTime(5 * 60 * 1000 + 1);
+      expect(current.state).toBe("running");
+      expect(send).not.toHaveBeenCalled();
+
+      run.status = "completed";
+      run.result = { ok: true };
+      await notifications.poll();
+      expect(current.state).toBe("completed");
+      expect(send).toHaveBeenCalledTimes(1);
+      notifications.dispose();
+
+      const restarted = new RequirementsNotifications(options);
+      await restarted.poll();
+      expect(send).toHaveBeenCalledTimes(1);
+      restarted.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

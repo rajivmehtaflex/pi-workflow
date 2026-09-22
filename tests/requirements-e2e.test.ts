@@ -102,11 +102,16 @@ describe("requirements-to-result integration", () => {
 
     const reopened = await openWorkflowDatabase({ cwd, workspaceIdentity: "workspace-1" });
     const reopenedRequests = new RequirementsRepository(reopened.db);
+    let reopenedLaunches = 0;
     const reopenedService = await createWorkflowRunService({
       cwd,
       database: reopened,
       requirementsRepository: reopenedRequests,
       reconcile: true,
+      runWorkflow: async () => {
+        reopenedLaunches += 1;
+        return { status: "completed", value: { unexpected: true } };
+      },
     });
     expect(reopenedRequests.get("e2e")).toMatchObject({
       state: "completed",
@@ -114,6 +119,17 @@ describe("requirements-to-result integration", () => {
       notificationDelivered: true,
     });
     expect(reopenedService.getRun(running.runId!).result).toEqual({ ok: true });
+    expect(reopenedLaunches).toBe(0);
+    const recoveredMessages: unknown[] = [];
+    const recoveredNotifications = new RequirementsNotifications({
+      workspaceKey: "workspace-1",
+      repository: reopenedRequests,
+      getRun: (runId) => reopenedService.getRun(runId),
+      send: (message) => recoveredMessages.push(message),
+    });
+    await recoveredNotifications.poll();
+    expect(recoveredMessages).toHaveLength(0);
+    recoveredNotifications.dispose();
     await reopenedService.dispose();
     reopened.close();
   });
