@@ -85,7 +85,7 @@ describe("workflow tool and UI projections", () => {
     );
   });
 
-  it("projects active runs into bounded status/widget state and clears both on dispose", () => {
+  it("projects active runs into Pi-compatible widget lines and clears both on dispose", () => {
     const setStatus = vi.fn();
     const setWidget = vi.fn();
     const service = {
@@ -96,7 +96,10 @@ describe("workflow tool and UI projections", () => {
       service,
     );
     expect(setStatus).toHaveBeenCalledWith("pi-workflow", "workflow: 1 active");
-    expect(setWidget).toHaveBeenCalledWith("pi-workflow", expect.stringContaining("run-1"));
+    expect(setWidget).toHaveBeenCalledWith(
+      "pi-workflow",
+      expect.arrayContaining([expect.stringContaining("run-1")]),
+    );
     projection.dispose();
     expect(setStatus).toHaveBeenLastCalledWith("pi-workflow", "");
     expect(setWidget).toHaveBeenLastCalledWith("pi-workflow", undefined);

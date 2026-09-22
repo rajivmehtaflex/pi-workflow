@@ -3,7 +3,7 @@ import { formatWorkflowRuns } from "./renderers.js";
 
 export interface WorkflowUiApi {
   setStatus?(id: string, text: string): void;
-  setWidget?(id: string, content?: unknown): void;
+  setWidget?(id: string, content?: string[]): void;
 }
 
 export interface WorkflowUiContext {
@@ -52,9 +52,11 @@ export function createWorkflowUiProjection(
       "pi-workflow",
       activeCount === 0 ? "" : `workflow: ${activeCount} active`,
     );
+    const widgetText =
+      widgetSections.length === 0 ? undefined : widgetSections.join("\n\n").slice(0, 1800);
     context.ui?.setWidget?.(
       "pi-workflow",
-      widgetSections.length === 0 ? undefined : widgetSections.join("\n\n").slice(0, 1800),
+      widgetText === undefined ? undefined : widgetText.split("\n"),
     );
   };
   const dispose = (): void => {
