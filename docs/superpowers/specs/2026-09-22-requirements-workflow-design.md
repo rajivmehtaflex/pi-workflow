@@ -1,6 +1,8 @@
 # Requirements to automatic workflow
 
-Status: proposed design, prepared for review; no runtime implementation performed.
+Status: implemented and verified in the standalone `pi-workflow` repository. Provider-free
+generation, compilation, execution, persistence, recovery, and Pi 0.87 loading are covered;
+provider-backed live validation remains unverified without credentials.
 
 ## Intent
 

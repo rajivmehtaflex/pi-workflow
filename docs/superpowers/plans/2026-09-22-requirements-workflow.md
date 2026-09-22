@@ -13,7 +13,9 @@ lifecycles, with one transaction admitting a request's workflow exactly once.
 
 **Spec:** `docs/superpowers/specs/2026-09-22-requirements-workflow-design.md`
 
-Status: proposed; implementation has not started. All tasks below are pending.
+Status: implemented and verified on branch `feat/requirements-workflow-auto`; Tasks 1–6 are
+complete. Provider-backed live validation remains unverified because no provider credential
+was available in the environment.
 
 ## Global constraints
 
